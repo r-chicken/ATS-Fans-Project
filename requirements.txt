@@ -1,0 +1,7 @@
+pymupdf
+pillow
+numpy
+pandas
+scikit-learn
+sentence-transformers
+joblib
