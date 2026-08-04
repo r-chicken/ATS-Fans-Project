@@ -46,6 +46,13 @@ def build_dataset(
 
     all_records = []
     pdf_paths = sorted(pdf_dir.glob("*.pdf"))
+    if not pdf_paths:
+        raise FileNotFoundError(
+            f"No PDF files found in {pdf_dir} (looked for *.pdf, case-sensitive). "
+            "Check that this path is correct and that Google Drive has fully mounted/synced "
+            "in this session - e.g. run `print(len(list(Path(pdf_dir).glob('*.pdf'))))` to confirm "
+            "before calling build_dataset again."
+        )
     for pdf_path in pdf_paths:
         try:
             all_records.extend(process_pdf(pdf_path, style_threshold=style_threshold, max_pages=max_pages))
