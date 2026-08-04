@@ -7,6 +7,7 @@ to hand-label in Google Sheets/Excel, then merge the labels back in.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +15,25 @@ import pandas as pd
 LABEL_COLUMN = "human_label"
 NOTES_COLUMN = "human_notes"
 VALID_LABELS = {"match", "mismatch", "unsure"}
+
+# Matches the "Priority should be N because ..." convention used in
+# human_notes for mismatch rows, e.g. "Priority should be 2 because the
+# newest scan shows new frequencies in the Waterfall compared to previous
+# scans". Case-insensitive, tolerant of the exact wording after the number.
+CORRECTED_PRIORITY_RE = re.compile(r"priority\s+should\s+be\s+(?P<priority>\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def parse_corrected_priority(notes) -> float | None:
+    """Pull the human-corrected priority number out of a human_notes entry.
+
+    Returns None if notes is blank/NaN or doesn't follow the
+    "Priority should be N ..." convention - callers should treat that as
+    "no correction available", not as an error.
+    """
+    if notes is None or (isinstance(notes, float) and pd.isna(notes)):
+        return None
+    match = CORRECTED_PRIORITY_RE.search(str(notes))
+    return float(match.group("priority")) if match else None
 
 
 def export_for_labeling(dataset_csv: str | Path, out_csv: str | Path, sample_n: int | None = None) -> pd.DataFrame:
@@ -51,6 +71,15 @@ def merge_labels(dataset_csv: str | Path, labeled_csv: str | Path, out_csv: str 
     the priority-prediction model, just not for measuring mismatch
     detection accuracy.
 
+    Also derives two columns from human_notes, for rows labeled "mismatch"
+    that follow the "Priority should be N because ..." convention:
+      - corrected_priority: the N, or NaN if not present/not parseable
+      - true_priority: corrected_priority where available, else the
+        stated priority_num - this is the best available training target
+        for "what priority should this text actually imply", since the
+        stated priority is exactly what you're saying is wrong on
+        mismatch rows and shouldn't be trained on as if it were correct.
+
     Prints diagnostics so a "0 labeled" result is never silent: it tells
     you whether the problem is the file you pointed at (no labels found in
     it - often a stale/cached copy in a Drive-mounted path right after an
@@ -84,7 +113,25 @@ def merge_labels(dataset_csv: str | Path, labeled_csv: str | Path, out_csv: str 
         on="report_id",
         how="left",
     )
+
+    merged["corrected_priority"] = merged[NOTES_COLUMN].apply(parse_corrected_priority)
+    is_mismatch = merged[LABEL_COLUMN] == "mismatch"
+    has_correction = merged["corrected_priority"].notna()
+    merged["true_priority"] = merged["priority_num"]
+    merged.loc[is_mismatch & has_correction, "true_priority"] = merged.loc[is_mismatch & has_correction, "corrected_priority"]
+
     merged.to_csv(out_csv, index=False)
     n_labeled = _count_filled(merged[LABEL_COLUMN])
     print(f"Result: {n_labeled} / {len(merged)} rows in the merged dataset have a human label.")
+
+    n_mismatch = int(is_mismatch.sum())
+    n_corrected = int((is_mismatch & has_correction).sum())
+    n_uncorrected = n_mismatch - n_corrected
+    print(f"{n_corrected} / {n_mismatch} mismatch rows had a parseable 'Priority should be N' correction in {NOTES_COLUMN}.")
+    if n_uncorrected:
+        print(
+            f"{n_uncorrected} mismatch rows had no parseable correction - true_priority falls back to the "
+            "stated priority for those, so they won't help train the model away from the error. Add a "
+            "'Priority should be N because ...' note to fix that."
+        )
     return merged
