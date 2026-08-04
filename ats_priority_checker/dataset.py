@@ -15,6 +15,7 @@ def build_dataset(
     pdf_dir: str | Path,
     out_dir: str | Path,
     style_threshold: float = DEFAULT_STYLE_THRESHOLD,
+    max_pages: int | None = None,
 ) -> dict:
     """Walk every PDF in pdf_dir, extract fields, and write three CSVs to out_dir:
 
@@ -23,6 +24,9 @@ def build_dataset(
     - parse_errors.csv    rows that failed to parse cleanly, for regex fixes /
                           manual review (this includes 'unknown' style rows,
                           since we can't safely auto-classify those)
+
+    Pass max_pages=1 to only extract each PDF's first page and ignore any
+    additional pages entirely.
 
     Returns a summary dict with counts, and also writes summary.txt.
     """
@@ -34,7 +38,7 @@ def build_dataset(
     pdf_paths = sorted(pdf_dir.glob("*.pdf"))
     for pdf_path in pdf_paths:
         try:
-            all_records.extend(process_pdf(pdf_path, style_threshold=style_threshold))
+            all_records.extend(process_pdf(pdf_path, style_threshold=style_threshold, max_pages=max_pages))
         except Exception as exc:  # noqa: BLE001 - keep going on a bad file
             all_records.append(
                 {

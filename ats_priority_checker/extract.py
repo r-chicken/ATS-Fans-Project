@@ -194,12 +194,24 @@ def classify_style(score: float | None, threshold: float = DEFAULT_STYLE_THRESHO
     return "colored_spectrum" if score > threshold else "waterfall"
 
 
-def process_pdf(pdf_path: str | Path, style_threshold: float = DEFAULT_STYLE_THRESHOLD) -> list[ReportRecord]:
+def process_pdf(
+    pdf_path: str | Path,
+    style_threshold: float = DEFAULT_STYLE_THRESHOLD,
+    max_pages: int | None = None,
+) -> list[ReportRecord]:
+    """Parse each page of pdf_path into a ReportRecord.
+
+    Pass max_pages=1 to only look at the first page of each PDF and skip
+    any additional pages entirely (e.g. when later pages never contain
+    equipment/priority content worth extracting).
+    """
     pdf_path = Path(pdf_path)
     doc = fitz.open(pdf_path)
     records = []
     try:
         for page_number, page in enumerate(doc, start=1):
+            if max_pages is not None and page_number > max_pages:
+                break
             text = page.get_text()
             fields = parse_report_fields(text)
 
