@@ -15,9 +15,18 @@ Each PDF page is a single equipment report with this fixed text layout:
 
 The recommendations/comments/priority fields are native PDF text (no OCR
 needed). The three charts (spectrum, waterfall/colored-spectrum, trend) are
-embedded as a single raster screenshot, which we don't parse for content —
-we only use it to detect which "style" of report layout was used, so that
-colored-spectrum-style reports can be excluded from the training set.
+embedded as a single raster screenshot - "Colored Spectrum" (the label that
+identifies the excluded report style) is baked into that screenshot as
+pixels, not selectable PDF text, so detecting it requires OCR'ing just that
+one embedded image (not the whole page, and not the main text fields).
+
+Style detection used to be a colorfulness heuristic on the same image, but
+that was calibrated on only 2 examples and started misclassifying real
+waterfall-style reports once run against hundreds of real files. OCR'ing
+for the literal "Colored Spectrum" label is slower per page but detects
+the actual thing that makes a report that style, so it doesn't drift as
+the report mix changes. colorfulness() is kept below for reference/
+diagnostics but no longer drives classification.
 """
 from __future__ import annotations
 
@@ -32,11 +41,9 @@ from PIL import Image
 
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
+COLORED_SPECTRUM_LABEL_RE = re.compile(r"colou?red\s+spectrum", re.IGNORECASE)
 
-# Colorfulness score above this = "colored_spectrum" style (excluded).
-# Calibrated against the two reference samples in data/samples/ - see
-# scripts/calibrate_style_threshold.py. Re-check this once you have more
-# examples of each style.
+# Kept only as an optional diagnostic signal now - see module docstring.
 DEFAULT_STYLE_THRESHOLD = 25.0
 
 
@@ -188,10 +195,35 @@ def largest_embedded_image(doc: fitz.Document, page: fitz.Page) -> Image.Image |
     return Image.open(io.BytesIO(base["image"]))
 
 
-def classify_style(score: float | None, threshold: float = DEFAULT_STYLE_THRESHOLD) -> str:
+def classify_style_by_color(score: float | None, threshold: float = DEFAULT_STYLE_THRESHOLD) -> str:
+    """Legacy colorfulness-based classifier. Kept for reference/diagnostics
+    only - see module docstring for why classify_style_by_text is used
+    instead."""
     if score is None:
         return "unknown"
     return "colored_spectrum" if score > threshold else "waterfall"
+
+
+def ocr_image_text(image: Image.Image) -> str:
+    """OCR an embedded chart screenshot. Returns "" (not an exception) if
+    OCR isn't available or fails on this image - callers treat that as
+    'could not determine style from text', not as a hard error, since the
+    caller still has the colorfulness score as a fallback signal.
+    """
+    import pytesseract
+
+    return pytesseract.image_to_string(image)
+
+
+def classify_style_by_text(ocr_text: str) -> str:
+    """"Colored Spectrum" is a label baked into the chart screenshot as
+    pixels (see module docstring) - its presence is what actually makes a
+    report that excluded style, so this looks for the words themselves
+    rather than inferring it from image color statistics.
+    """
+    if COLORED_SPECTRUM_LABEL_RE.search(ocr_text):
+        return "colored_spectrum"
+    return "waterfall"
 
 
 def process_pdf(
@@ -217,9 +249,15 @@ def process_pdf(
 
             chart_img = largest_embedded_image(doc, page)
             score = colorfulness(chart_img) if chart_img is not None else None
-            style = classify_style(score, threshold=style_threshold)
             if chart_img is None:
+                style = "unknown"
                 fields["parse_notes"] = (fields["parse_notes"] + "; no chart image found on page").strip("; ")
+            else:
+                try:
+                    style = classify_style_by_text(ocr_image_text(chart_img))
+                except Exception as exc:  # noqa: BLE001 - e.g. tesseract binary missing
+                    style = "unknown"
+                    fields["parse_notes"] = (fields["parse_notes"] + f"; OCR failed: {exc}").strip("; ")
 
             records.append(
                 ReportRecord(

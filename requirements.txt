@@ -5,3 +5,4 @@ pandas
 scikit-learn
 sentence-transformers
 joblib
+pytesseract
