@@ -16,17 +16,27 @@ def build_dataset(
     out_dir: str | Path,
     style_threshold: float = DEFAULT_STYLE_THRESHOLD,
     max_pages: int | None = None,
+    filter_style: bool = True,
 ) -> dict:
     """Walk every PDF in pdf_dir, extract fields, and write three CSVs to out_dir:
 
-    - dataset.csv         usable rows: waterfall-style + fields parsed OK
+    - dataset.csv         usable rows
     - excluded_style.csv  colored-spectrum-style rows, kept aside for reference
+                          (always written, empty when filter_style=False)
     - parse_errors.csv    rows that failed to parse cleanly, for regex fixes /
-                          manual review (this includes 'unknown' style rows,
-                          since we can't safely auto-classify those)
+                          manual review
 
     Pass max_pages=1 to only extract each PDF's first page and ignore any
     additional pages entirely.
+
+    Pass filter_style=False to skip style-based filtering entirely - every
+    row that parsed cleanly goes into dataset.csv regardless of chart style
+    (style/chart_colorfulness are still recorded in the output for
+    reference). Use this once your source PDFs are already a single style
+    (e.g. you've manually removed the other style) - the colorfulness
+    heuristic was calibrated on very few examples and can misclassify some
+    legitimate reports, so don't rely on it to filter a style that isn't
+    present in your data anymore.
 
     Returns a summary dict with counts, and also writes summary.txt.
     """
@@ -66,9 +76,14 @@ def build_dataset(
     df = pd.DataFrame(rows)
     df.insert(0, "report_id", [f"{row.source_file}_p{row.page_number}" for row in all_records] if all_records else [])
 
-    usable = df[(df["style"] == "waterfall") & (df["parse_ok"])].copy()
-    excluded_style = df[df["style"] == "colored_spectrum"].copy()
-    parse_errors = df[~df["parse_ok"] | (df["style"] == "unknown")].copy()
+    if filter_style:
+        usable = df[(df["style"] == "waterfall") & (df["parse_ok"])].copy()
+        excluded_style = df[df["style"] == "colored_spectrum"].copy()
+        parse_errors = df[~df["parse_ok"] | (df["style"] == "unknown")].copy()
+    else:
+        usable = df[df["parse_ok"]].copy()
+        excluded_style = df.iloc[0:0].copy()
+        parse_errors = df[~df["parse_ok"]].copy()
 
     usable.to_csv(out_dir / "dataset.csv", index=False)
     excluded_style.to_csv(out_dir / "excluded_style.csv", index=False)
