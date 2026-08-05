@@ -65,6 +65,7 @@ class ReportRecord:
     spectrum_unit: str | None  # "in/s" | "g" | "gE" | "unknown" | None (no chart image)
     spectrum_fund_amp: float | None
     spectrum_priority_hint: int | None  # supporting evidence only - see graph_signals.py
+    chart_ocr_text: str | None  # cached raw OCR of the chart image - see dataset.recompute_dataset
     parse_ok: bool
     parse_notes: str
 
@@ -254,6 +255,7 @@ def process_pdf(
 
             chart_img = largest_embedded_image(doc, page)
             score = colorfulness(chart_img) if chart_img is not None else None
+            ocr_text = None
             if chart_img is None:
                 style = "unknown"
                 fields["parse_notes"] = (fields["parse_notes"] + "; no chart image found on page").strip("; ")
@@ -291,6 +293,7 @@ def process_pdf(
                     spectrum_unit=spectrum_unit,
                     spectrum_fund_amp=spectrum_fund_amp,
                     spectrum_priority_hint=spectrum_priority_hint_val,
+                    chart_ocr_text=ocr_text,
                     parse_ok=fields["parse_ok"],
                     parse_notes=fields["parse_notes"],
                 )
