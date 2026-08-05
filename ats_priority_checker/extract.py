@@ -39,6 +39,8 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
+from .graph_signals import spectrum_priority_hint
+
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
 COLORED_SPECTRUM_LABEL_RE = re.compile(r"colou?red\s+spectrum", re.IGNORECASE)
@@ -60,6 +62,9 @@ class ReportRecord:
     comments: str | None
     chart_colorfulness: float | None
     style: str  # "waterfall" | "colored_spectrum" | "unknown"
+    spectrum_unit: str | None  # "in/s" | "g" | "gE" | "unknown" | None (no chart image)
+    spectrum_fund_amp: float | None
+    spectrum_priority_hint: int | None  # supporting evidence only - see graph_signals.py
     parse_ok: bool
     parse_notes: str
 
@@ -252,11 +257,22 @@ def process_pdf(
             if chart_img is None:
                 style = "unknown"
                 fields["parse_notes"] = (fields["parse_notes"] + "; no chart image found on page").strip("; ")
+                spectrum_unit = None
+                spectrum_fund_amp = None
+                spectrum_priority_hint_val = None
             else:
                 try:
-                    style = classify_style_by_text(ocr_image_text(chart_img))
+                    ocr_text = ocr_image_text(chart_img)
+                    style = classify_style_by_text(ocr_text)
+                    hint = spectrum_priority_hint(ocr_text)
+                    spectrum_unit = hint["spectrum_unit"]
+                    spectrum_fund_amp = hint["spectrum_fund_amp"]
+                    spectrum_priority_hint_val = hint["spectrum_priority_hint"]
                 except Exception as exc:  # noqa: BLE001 - e.g. tesseract binary missing
                     style = "unknown"
+                    spectrum_unit = None
+                    spectrum_fund_amp = None
+                    spectrum_priority_hint_val = None
                     fields["parse_notes"] = (fields["parse_notes"] + f"; OCR failed: {exc}").strip("; ")
 
             records.append(
@@ -272,6 +288,9 @@ def process_pdf(
                     comments=fields["comments"],
                     chart_colorfulness=score,
                     style=style,
+                    spectrum_unit=spectrum_unit,
+                    spectrum_fund_amp=spectrum_fund_amp,
+                    spectrum_priority_hint=spectrum_priority_hint_val,
                     parse_ok=fields["parse_ok"],
                     parse_notes=fields["parse_notes"],
                 )
