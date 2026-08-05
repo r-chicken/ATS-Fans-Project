@@ -23,10 +23,7 @@ from __future__ import annotations
 
 import re
 
-FUND_AMP_LINE_RE = re.compile(
-    r"fund\s*amp[:\s]*(?P<amp>[\d.]+).*?order[:\s]*(?P<order>[\d.]+)",
-    re.IGNORECASE,
-)
+FUND_AMP_RE = re.compile(r"fund\s*amp[:\s]*(?P<amp>[\d.]+)", re.IGNORECASE)
 TREND_OVERALL_RE = re.compile(r"trend\s+overall[:\s]*[\d.]+\s*(?P<unit>\S+)", re.IGNORECASE)
 
 
@@ -67,37 +64,21 @@ def detect_spectrum_unit(ocr_text: str) -> str:
     return "unknown"
 
 
-def extract_fund_amp(ocr_text: str, target_order: float = 1.0, order_tolerance: float = 0.1) -> float | None:
-    """Pull the "Fund Amp: X, ..., Order: N" reading for the fundamental
-    (order 1) specifically out of the Spectrum plot's OCR text.
+def extract_fund_amp(ocr_text: str) -> float | None:
+    """Pull the "Fund Amp: X" reading out of the Spectrum plot's OCR text.
 
     Some reports show more than one "Fund Amp" line - one per peak the
-    analyst has marked (e.g. order 1, order 3.04, order 4) - and the label
-    "Fund Amp" appears on all of them regardless of order, so the label
-    text alone doesn't tell you which is the true fundamental. Only the
-    Order value does (confirmed against real reports: report_018 lists
-    order 3.04 BEFORE order 1, so taking the first match is wrong there
-    even though it happens to work for reports that only ever list order 1
-    first). This is the amplitude at 1x running speed specifically - a
-    different, usually much smaller, quantity than the Trend plot's
-    overall/broadband amplitude. Don't confuse the two.
-
-    Returns None if no line has an Order within order_tolerance of 1 (e.g.
-    the report's only marked peak is some other order, or "Fund Amp" isn't
-    present at all) - that's "no fundamental reading available", not zero.
+    analyst has marked, each at its own harmonic order. This takes
+    whichever is listed FIRST in the text, by explicit choice - not by
+    Order value. (An earlier version of this selected the line whose
+    Order was closest to 1, i.e. the true fundamental; that was tried and
+    then explicitly reverted back to first-by-position. Note this means a
+    report that lists a non-fundamental order first, e.g. report_018
+    lists Order 3.04 before Order 1, returns the Order-3.04 amplitude
+    here, not the fundamental's.)
     """
-    best_amp = None
-    best_diff = None
-    for line in ocr_text.splitlines():
-        match = FUND_AMP_LINE_RE.search(line)
-        if not match:
-            continue
-        order = float(match.group("order"))
-        diff = abs(order - target_order)
-        if diff <= order_tolerance and (best_diff is None or diff < best_diff):
-            best_amp = float(match.group("amp"))
-            best_diff = diff
-    return best_amp
+    match = FUND_AMP_RE.search(ocr_text)
+    return float(match.group("amp")) if match else None
 
 
 def velocity_fund_amp_priority_hint(fund_amp: float) -> int | None:
