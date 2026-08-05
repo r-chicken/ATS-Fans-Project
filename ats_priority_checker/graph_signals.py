@@ -23,7 +23,11 @@ from __future__ import annotations
 
 import re
 
-FUND_AMP_RE = re.compile(r"fund\s*amp[:\s]*([\d.]+)", re.IGNORECASE)
+FUND_AMP_LINE_RE = re.compile(
+    r"fund\s*amp[:\s]*(?P<amp>[\d.]+).*?order[:\s]*(?P<order>[\d.]+)",
+    re.IGNORECASE,
+)
+TREND_OVERALL_RE = re.compile(r"trend\s+overall[:\s]*[\d.]+\s*(?P<unit>\S+)", re.IGNORECASE)
 
 
 def detect_spectrum_unit(ocr_text: str) -> str:
@@ -31,7 +35,29 @@ def detect_spectrum_unit(ocr_text: str) -> str:
     chart's title text (e.g. "...Trend Overall: 1.186 in/s") rather than
     the y-axis label itself, which is usually rendered rotated 90 degrees
     and OCRs unreliably. Returns "in/s", "g", "gE", or "unknown".
+
+    Anchored specifically to the token right after "Trend Overall: N" -
+    confirmed against real reports this is far more reliable than
+    searching the whole OCR blob. "gE" is exactly 2 characters, and OCR
+    sometimes misreads the italic "E" as something else entirely (seen for
+    real as "g&") - since the whole unit token is only ever 1-2 characters
+    here, matching its *exact* length distinguishes a genuine bare "g"
+    (1 char) from a garbled "gE" (2 chars, second char unreliable) without
+    needing to know what the garbled character actually is.
     """
+    match = TREND_OVERALL_RE.search(ocr_text)
+    if match:
+        token = match.group("unit").strip(",;:.")
+        if re.search(r"in\s*/\s*s", token, re.IGNORECASE):
+            return "in/s"
+        if re.fullmatch(r"g.", token, re.IGNORECASE):
+            return "gE"
+        if re.fullmatch(r"g", token, re.IGNORECASE):
+            return "g"
+        return "unknown"
+
+    # No "Trend Overall" anchor found at all - fall back to a broader,
+    # less precise search over the whole OCR text.
     if re.search(r"in\s*/\s*s", ocr_text, re.IGNORECASE):
         return "in/s"
     if re.search(r"\bgE\b", ocr_text):
@@ -41,15 +67,37 @@ def detect_spectrum_unit(ocr_text: str) -> str:
     return "unknown"
 
 
-def extract_fund_amp(ocr_text: str) -> float | None:
-    """Pull the "Fund Amp: X" reading out of the Spectrum plot's OCR text.
+def extract_fund_amp(ocr_text: str, target_order: float = 1.0, order_tolerance: float = 0.1) -> float | None:
+    """Pull the "Fund Amp: X, ..., Order: N" reading for the fundamental
+    (order 1) specifically out of the Spectrum plot's OCR text.
 
-    This is the amplitude at the fundamental (1x running speed) frequency
-    specifically - a different, usually much smaller, quantity than the
-    Trend plot's overall/broadband amplitude. Don't confuse the two.
+    Some reports show more than one "Fund Amp" line - one per peak the
+    analyst has marked (e.g. order 1, order 3.04, order 4) - and the label
+    "Fund Amp" appears on all of them regardless of order, so the label
+    text alone doesn't tell you which is the true fundamental. Only the
+    Order value does (confirmed against real reports: report_018 lists
+    order 3.04 BEFORE order 1, so taking the first match is wrong there
+    even though it happens to work for reports that only ever list order 1
+    first). This is the amplitude at 1x running speed specifically - a
+    different, usually much smaller, quantity than the Trend plot's
+    overall/broadband amplitude. Don't confuse the two.
+
+    Returns None if no line has an Order within order_tolerance of 1 (e.g.
+    the report's only marked peak is some other order, or "Fund Amp" isn't
+    present at all) - that's "no fundamental reading available", not zero.
     """
-    match = FUND_AMP_RE.search(ocr_text)
-    return float(match.group(1)) if match else None
+    best_amp = None
+    best_diff = None
+    for line in ocr_text.splitlines():
+        match = FUND_AMP_LINE_RE.search(line)
+        if not match:
+            continue
+        order = float(match.group("order"))
+        diff = abs(order - target_order)
+        if diff <= order_tolerance and (best_diff is None or diff < best_diff):
+            best_amp = float(match.group("amp"))
+            best_diff = diff
+    return best_amp
 
 
 def velocity_fund_amp_priority_hint(fund_amp: float) -> int | None:
