@@ -118,6 +118,9 @@ def build_dataset(
                     "spectrum_unit": None,
                     "spectrum_fund_amp": None,
                     "spectrum_priority_hint": None,
+                    "trend_current_value": None,
+                    "trend_escalation": None,
+                    "trend_priority_hint": None,
                     "chart_ocr_text": None,
                     "parse_ok": False,
                     "parse_notes": f"exception during processing: {exc}",
@@ -149,6 +152,12 @@ def recompute_dataset(out_dir: str | Path, filter_style: bool = True) -> dict:
     chart_ocr_text is missing (no chart image was found, or OCR itself
     failed on that page) - those keep whatever style/spectrum_* values
     they already had, since there's no cached text to re-derive from.
+
+    Does NOT touch trend_current_value/trend_escalation/trend_priority_hint
+    - unlike the Spectrum/style signals, trend_priority_hint() needs the
+    actual chart image (pixel analysis for the escalation check), not just
+    the cached OCR text, so a change to Trend logic still needs a full
+    build_dataset() re-run to take effect.
 
     Only run this against an out_dir that build_dataset has already
     populated (i.e. after at least one full run with a version of the code

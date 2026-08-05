@@ -39,7 +39,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from .graph_signals import spectrum_priority_hint
+from .graph_signals import spectrum_priority_hint, trend_priority_hint
 
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
@@ -65,6 +65,9 @@ class ReportRecord:
     spectrum_unit: str | None  # "in/s" | "g" | "gE" | "unknown" | None (no chart image)
     spectrum_fund_amp: float | None
     spectrum_priority_hint: int | None  # supporting evidence only - see graph_signals.py
+    trend_current_value: float | None
+    trend_escalation: str | None  # "sharp_recent_increase" | "sustained_increase" | "stable_high" | "no_signal" | None
+    trend_priority_hint: int | None  # supporting evidence only - see graph_signals.py
     chart_ocr_text: str | None  # cached raw OCR of the chart image - see dataset.recompute_dataset
     parse_ok: bool
     parse_notes: str
@@ -262,6 +265,9 @@ def process_pdf(
                 spectrum_unit = None
                 spectrum_fund_amp = None
                 spectrum_priority_hint_val = None
+                trend_current_value = None
+                trend_escalation = None
+                trend_priority_hint_val = None
             else:
                 try:
                     ocr_text = ocr_image_text(chart_img)
@@ -276,6 +282,17 @@ def process_pdf(
                     spectrum_fund_amp = None
                     spectrum_priority_hint_val = None
                     fields["parse_notes"] = (fields["parse_notes"] + f"; OCR failed: {exc}").strip("; ")
+
+                try:
+                    trend = trend_priority_hint(chart_img, ocr_text or "")
+                    trend_current_value = trend["trend_current_value"]
+                    trend_escalation = trend["trend_escalation"]
+                    trend_priority_hint_val = trend["trend_priority_hint"]
+                except Exception as exc:  # noqa: BLE001 - keep going even if the pixel analysis chokes on one report
+                    trend_current_value = None
+                    trend_escalation = None
+                    trend_priority_hint_val = None
+                    fields["parse_notes"] = (fields["parse_notes"] + f"; trend analysis failed: {exc}").strip("; ")
 
             records.append(
                 ReportRecord(
@@ -293,6 +310,9 @@ def process_pdf(
                     spectrum_unit=spectrum_unit,
                     spectrum_fund_amp=spectrum_fund_amp,
                     spectrum_priority_hint=spectrum_priority_hint_val,
+                    trend_current_value=trend_current_value,
+                    trend_escalation=trend_escalation,
+                    trend_priority_hint=trend_priority_hint_val,
                     chart_ocr_text=ocr_text,
                     parse_ok=fields["parse_ok"],
                     parse_notes=fields["parse_notes"],

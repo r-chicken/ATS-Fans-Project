@@ -76,7 +76,7 @@ def flag_mismatches(
     low_confidence_threshold: float = 0.15,
 ) -> pd.DataFrame:
     """Compare stated priority to text-implied priority, and to the
-    Spectrum Fund Amp graph signal where available.
+    Spectrum Fund Amp and Trend graph signals where available.
 
     Flags a row when:
       - the predicted (argmax) priority differs from the stated priority, OR
@@ -85,15 +85,16 @@ def flag_mismatches(
         as ambiguous / doesn't clearly support this priority" cases, not
         just clean disagreements), OR
       - the Spectrum Fund Amp hint (velocity/in-s reports only - see
-        graph_signals.py) disagrees with the stated priority.
+        graph_signals.py) disagrees with the stated priority, OR
+      - the Trend hint (velocity/in-s reports only, escalating cases only -
+        see graph_signals.py) disagrees with the stated priority.
 
-    The Fund Amp hint is allowed to flag on its own, even when the text
-    agrees with the stated priority - the whole reason it exists is to
+    Both graph hints are allowed to flag on their own, even when the text
+    agrees with the stated priority - the whole reason they exist is to
     catch cases the text can't: report writers sometimes under-state
     urgency for equipment that's been high-priority before, in which case
     the text itself may honestly match a priority that's actually too low.
-    Waterfall and Trend signals are not yet incorporated - see
-    graph_signals.py for status.
+    Waterfall is not yet incorporated - see graph_signals.py for status.
     """
     out = df.copy()
     out["predicted_priority"] = pred
@@ -108,13 +109,16 @@ def flag_mismatches(
     text_disagrees = out["predicted_priority"] != out["priority_num"]
     low_conf = out["confidence_in_stated_priority"] < low_confidence_threshold
 
-    if "spectrum_priority_hint" in out.columns:
-        hint = out["spectrum_priority_hint"]
-        graph_disagrees = hint.notna() & (hint != out["priority_num"])
-    else:
-        graph_disagrees = pd.Series(False, index=out.index)
+    def _disagrees(col: str) -> pd.Series:
+        if col not in out.columns:
+            return pd.Series(False, index=out.index)
+        hint = out[col]
+        return hint.notna() & (hint != out["priority_num"])
 
-    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | graph_disagrees
+    spectrum_disagrees = _disagrees("spectrum_priority_hint")
+    trend_disagrees = _disagrees("trend_priority_hint")
+
+    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees | trend_disagrees
 
     def reason(r):
         parts = []
@@ -122,9 +126,13 @@ def flag_mismatches(
             parts.append(f"text implies priority {r['predicted_priority']:g}, report states {r['priority_num']:g}")
         elif r["confidence_in_stated_priority"] < low_confidence_threshold:
             parts.append("text is a weak/ambiguous match for the stated priority")
-        hint_val = r.get("spectrum_priority_hint")
-        if pd.notna(hint_val) and hint_val != r["priority_num"]:
-            parts.append(f"Spectrum Fund Amp (in/s) suggests priority {hint_val:g}, report states {r['priority_num']:g}")
+        spectrum_hint = r.get("spectrum_priority_hint")
+        if pd.notna(spectrum_hint) and spectrum_hint != r["priority_num"]:
+            parts.append(f"Spectrum Fund Amp (in/s) suggests priority {spectrum_hint:g}, report states {r['priority_num']:g}")
+        trend_hint = r.get("trend_priority_hint")
+        if pd.notna(trend_hint) and trend_hint != r["priority_num"]:
+            escalation = r.get("trend_escalation", "escalating")
+            parts.append(f"Trend ({escalation}) suggests priority {trend_hint:g}, report states {r['priority_num']:g}")
         return "; ".join(parts)
 
     out["flag_reason"] = out.apply(reason, axis=1)
