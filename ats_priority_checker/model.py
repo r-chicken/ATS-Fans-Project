@@ -316,30 +316,27 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     number per row, not two to reconcile - graph_recommended_priority is
     exactly spectrum_priority_hint.
 
-    What escalation actually contributes depends on WHICH trigger fired
-    (dataset.py's escalation_trigger, "threshold_jump" and/or
-    "amplitude_drop" - do not try to infer this from escalation_reason's
-    free text):
-      - threshold_jump does NOT get its own path here - it's fully
-        redundant with spectrum_disagrees below, since a jump's
-        escalation_priority_hint is always this row's own
-        spectrum_priority_hint. Originally this DID get its own path,
-        checking escalation_flag on its own - that was a bug, caught in
-        review: a jump the current report's stated priority had already
-        caught up to (spectrum_priority_hint == priority_num) still got
-        flagged as disagreeing, when there was nothing left to disagree
-        about. Don't reintroduce that.
-      - amplitude_drop DOES need its own path (drop_triggered below),
-        independent of the numeric spectrum comparison: a low reading
-        looks completely ordinary on the numbers alone (a drop doesn't
-        imply "should be worse", per add_escalation_signals), so the drop
-        itself has to be what flags it.
+    escalation_flag (either trigger - dataset.py's escalation_trigger,
+    "threshold_jump" and/or "amplitude_drop") counts as its own
+    disagreement here, EVEN on a threshold_jump the current report's
+    stated priority already numerically matches. An earlier version of
+    this function restricted that to amplitude_drop only, treating a
+    caught-up threshold_jump as agreement since spectrum_priority_hint by
+    itself no longer contradicted priority_num - reverted per explicit
+    product decision: a recent significant change on this equipment is
+    worth a reviewer's attention regardless of whether this report's own
+    number already reflects it, same as a fresh drop is. Don't
+    reintroduce the restriction without checking back on that decision.
 
-    graph_note still surfaces the escalation_reason text whenever
-    escalation_flag is True, even for a threshold_jump that isn't driving
-    graph_agrees_with_stated to False - that's deliberate: "this equipment
-    just escalated, and the current report already reflects it" is still
-    useful context for a reviewer, it's just not a disagreement.
+    Because "graph" can now mean two different kinds of evidence -
+    spectrum_priority_hint plainly reading a different threshold bucket,
+    vs. escalation_flag firing on a recent jump/drop even when the number
+    matches - disagreement_source annotates which one(s) actually apply
+    on that row, e.g. "graph (spectrum)", "graph (severe amplitude change
+    from previous scan)", or "graph (spectrum, severe amplitude change
+    from previous scan)" when both do. Read the annotation, not just the
+    bare word "graph", before deciding a row needs a second look for the
+    reason you expect.
     """
     out = pd.DataFrame(index=flagged.index)
     for col in ("report_id", "equipment_id", "priority_raw"):
@@ -357,24 +354,10 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     spectrum = flagged.get("spectrum_priority_hint", pd.Series(np.nan, index=flagged.index))
     escalation_flag = flagged.get("escalation_flag", pd.Series(False, index=flagged.index)).fillna(False)
     escalation_reason = flagged.get("escalation_reason", pd.Series("", index=flagged.index)).fillna("")
-    escalation_trigger = flagged.get("escalation_trigger", pd.Series("", index=flagged.index)).fillna("")
 
     out["graph_recommended_priority"] = spectrum
     spectrum_disagrees = spectrum.notna() & (spectrum != stated)
-    # A threshold_jump's escalation_priority_hint is always exactly this
-    # row's own spectrum_priority_hint (dataset.add_escalation_signals),
-    # so it's fully redundant with spectrum_disagrees above - including it
-    # here too double-counts the SAME comparison, and worse, if the
-    # current report's stated priority has already caught up to the jump
-    # (spectrum_priority_hint == stated), it would flag a row as
-    # disagreeing when there's nothing left to disagree about - the
-    # analyst already reflected the jump in what they wrote. Only
-    # amplitude_drop needs its own path here: a low reading looks
-    # completely ordinary on the numbers alone, so the drop itself has to
-    # be what triggers this, independent of whether spectrum_disagrees
-    # fired.
-    drop_triggered = escalation_flag & escalation_trigger.str.contains("amplitude_drop", na=False)
-    graph_disagrees = spectrum_disagrees | drop_triggered
+    graph_disagrees = spectrum_disagrees | escalation_flag
     graph_has_opinion = spectrum.notna() | escalation_flag
     out["graph_agrees_with_stated"] = pd.Series(
         np.where(~graph_has_opinion, pd.NA, ~graph_disagrees), index=flagged.index
@@ -395,15 +378,23 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
 
     out["any_disagreement"] = text_agrees.eq(False) | graph_disagrees
 
-    def _source(text_dis, graph_dis):
+    def _source(text_dis, spec_dis, esc_flag):
         parts = []
         if text_dis:
             parts.append("text")
-        if graph_dis:
-            parts.append("graph")
+        if spec_dis or esc_flag:
+            graph_reasons = []
+            if spec_dis:
+                graph_reasons.append("spectrum")
+            if esc_flag:
+                graph_reasons.append("severe amplitude change from previous scan")
+            parts.append(f"graph ({', '.join(graph_reasons)})")
         return ", ".join(parts)
 
-    out["disagreement_source"] = [_source(not ta, gd) for ta, gd in zip(text_agrees.fillna(True), graph_disagrees)]
+    out["disagreement_source"] = [
+        _source(not ta, sd, ef)
+        for ta, sd, ef in zip(text_agrees.fillna(True), spectrum_disagrees, escalation_flag)
+    ]
 
     return out
 
