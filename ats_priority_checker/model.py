@@ -76,7 +76,8 @@ def flag_mismatches(
     low_confidence_threshold: float = 0.15,
 ) -> pd.DataFrame:
     """Compare stated priority to text-implied priority, and to the
-    Spectrum Fund Amp and Trend graph signals where available.
+    Spectrum peak-amplitude and cross-report escalation graph signals
+    where available.
 
     Flags a row when:
       - the predicted (argmax) priority differs from the stated priority, OR
@@ -84,10 +85,12 @@ def flag_mismatches(
         it isn't the top prediction for another class (catches "text reads
         as ambiguous / doesn't clearly support this priority" cases, not
         just clean disagreements), OR
-      - the Spectrum Fund Amp hint (velocity/in-s reports only - see
-        graph_signals.py) suggests a MORE urgent priority than stated, OR
-      - the Trend hint (velocity/in-s reports only, escalating cases only -
-        see graph_signals.py) suggests a MORE urgent priority than stated.
+      - the Spectrum peak-amplitude hint (see graph_signals.py) suggests a
+        MORE urgent priority than stated, OR
+      - the escalation hint (see dataset.add_escalation_signals) - this
+        equipment's reading jumped to a more severe priority bucket, or
+        dropped drastically, versus its own most recent earlier test -
+        suggests a MORE urgent priority than stated.
 
     Both graph hints are allowed to flag on their own, even when the text
     agrees with the stated priority - the whole reason they exist is to
@@ -98,16 +101,14 @@ def flag_mismatches(
     Graph hints only flag in ONE direction: hint < stated (lower number =
     more urgent). A hint suggesting LESS urgency than stated is not a
     mismatch signal - it just means the graph alone doesn't capture
-    whatever else supports the higher stated priority (spectrum/waterfall/
-    other context), which is expected and not what these signals exist to
-    catch. Flagging both directions was tried and produced disagreements
-    on ~9-14% of otherwise-correct reports with zero gain in real mismatch
-    detection (see the conversation this fix is from for the concrete
-    evidence) - real prioritization is holistic, so a raw threshold rule
-    landing one level more cautious than the stated priority is normal
-    and not evidence of an error.
-
-    Waterfall is not yet incorporated - see graph_signals.py for status.
+    whatever else supports the higher stated priority (comments, repair
+    history, other context), which is expected and not what these signals
+    exist to catch. Flagging both directions was tried and produced
+    disagreements on ~9-14% of otherwise-correct reports with zero gain in
+    real mismatch detection (see the conversation this fix is from for the
+    concrete evidence) - real prioritization is holistic, so a raw
+    threshold rule landing one level more cautious than the stated
+    priority is normal and not evidence of an error.
     """
     out = df.copy()
     out["predicted_priority"] = pred
@@ -129,9 +130,9 @@ def flag_mismatches(
         return hint.notna() & (hint < out["priority_num"])
 
     spectrum_disagrees = _disagrees("spectrum_priority_hint")
-    trend_disagrees = _disagrees("trend_priority_hint")
+    escalation_disagrees = _disagrees("escalation_priority_hint")
 
-    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees | trend_disagrees
+    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees | escalation_disagrees
 
     def reason(r):
         parts = []
@@ -141,11 +142,11 @@ def flag_mismatches(
             parts.append("text is a weak/ambiguous match for the stated priority")
         spectrum_hint = r.get("spectrum_priority_hint")
         if pd.notna(spectrum_hint) and spectrum_hint < r["priority_num"]:
-            parts.append(f"Spectrum Fund Amp (in/s) suggests priority {spectrum_hint:g}, report states {r['priority_num']:g}")
-        trend_hint = r.get("trend_priority_hint")
-        if pd.notna(trend_hint) and trend_hint < r["priority_num"]:
-            escalation = r.get("trend_escalation", "escalating")
-            parts.append(f"Trend ({escalation}) suggests priority {trend_hint:g}, report states {r['priority_num']:g}")
+            parts.append(f"Spectrum peak reading suggests priority {spectrum_hint:g}, report states {r['priority_num']:g}")
+        escalation_hint = r.get("escalation_priority_hint")
+        if pd.notna(escalation_hint) and escalation_hint < r["priority_num"]:
+            escalation_why = r.get("escalation_reason", "escalating vs. this equipment's prior test")
+            parts.append(f"escalation ({escalation_why}) suggests priority {escalation_hint:g}, report states {r['priority_num']:g}")
         return "; ".join(parts)
 
     out["flag_reason"] = out.apply(reason, axis=1)

@@ -39,7 +39,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from .graph_signals import spectrum_priority_hint, trend_priority_hint
+from .graph_signals import spectrum_priority_hint
 
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
@@ -63,11 +63,10 @@ class ReportRecord:
     chart_colorfulness: float | None
     style: str  # "waterfall" | "colored_spectrum" | "unknown"
     spectrum_unit: str | None  # "in/s" | "g" | "gE" | "unknown" | None (no chart image)
-    spectrum_fund_amp: float | None
+    spectrum_peak_amplitude: float | None  # tallest real Spectrum peak, floored to the nearest y-axis label - see graph_signals.py
+    spectrum_peak_amplitude_raw: float | None  # same reading before flooring, for debugging only
     spectrum_priority_hint: int | None  # supporting evidence only - see graph_signals.py
-    trend_current_value: float | None
-    trend_escalation: str | None  # "sharp_recent_increase" | "sustained_increase" | "stable_high" | "no_signal" | None
-    trend_priority_hint: int | None  # supporting evidence only - see graph_signals.py
+    spectrum_peak_error: str | None  # why peak-reading failed, if it did - see graph_signals.read_spectrum_peak
     chart_ocr_text: str | None  # cached raw OCR of the chart image - see dataset.recompute_dataset
     parse_ok: bool
     parse_notes: str
@@ -263,36 +262,28 @@ def process_pdf(
                 style = "unknown"
                 fields["parse_notes"] = (fields["parse_notes"] + "; no chart image found on page").strip("; ")
                 spectrum_unit = None
-                spectrum_fund_amp = None
+                spectrum_peak_amplitude = None
+                spectrum_peak_amplitude_raw = None
                 spectrum_priority_hint_val = None
-                trend_current_value = None
-                trend_escalation = None
-                trend_priority_hint_val = None
+                spectrum_peak_error = None
             else:
                 try:
                     ocr_text = ocr_image_text(chart_img)
                     style = classify_style_by_text(ocr_text)
-                    hint = spectrum_priority_hint(ocr_text)
+                    hint = spectrum_priority_hint(chart_img, ocr_text)
                     spectrum_unit = hint["spectrum_unit"]
-                    spectrum_fund_amp = hint["spectrum_fund_amp"]
+                    spectrum_peak_amplitude = hint["spectrum_peak_amplitude"]
+                    spectrum_peak_amplitude_raw = hint["spectrum_peak_amplitude_raw"]
                     spectrum_priority_hint_val = hint["spectrum_priority_hint"]
+                    spectrum_peak_error = hint["spectrum_peak_error"]
                 except Exception as exc:  # noqa: BLE001 - e.g. tesseract binary missing
                     style = "unknown"
                     spectrum_unit = None
-                    spectrum_fund_amp = None
+                    spectrum_peak_amplitude = None
+                    spectrum_peak_amplitude_raw = None
                     spectrum_priority_hint_val = None
+                    spectrum_peak_error = str(exc)
                     fields["parse_notes"] = (fields["parse_notes"] + f"; OCR failed: {exc}").strip("; ")
-
-                try:
-                    trend = trend_priority_hint(chart_img, ocr_text or "")
-                    trend_current_value = trend["trend_current_value"]
-                    trend_escalation = trend["trend_escalation"]
-                    trend_priority_hint_val = trend["trend_priority_hint"]
-                except Exception as exc:  # noqa: BLE001 - keep going even if the pixel analysis chokes on one report
-                    trend_current_value = None
-                    trend_escalation = None
-                    trend_priority_hint_val = None
-                    fields["parse_notes"] = (fields["parse_notes"] + f"; trend analysis failed: {exc}").strip("; ")
 
             records.append(
                 ReportRecord(
@@ -308,11 +299,10 @@ def process_pdf(
                     chart_colorfulness=score,
                     style=style,
                     spectrum_unit=spectrum_unit,
-                    spectrum_fund_amp=spectrum_fund_amp,
+                    spectrum_peak_amplitude=spectrum_peak_amplitude,
+                    spectrum_peak_amplitude_raw=spectrum_peak_amplitude_raw,
                     spectrum_priority_hint=spectrum_priority_hint_val,
-                    trend_current_value=trend_current_value,
-                    trend_escalation=trend_escalation,
-                    trend_priority_hint=trend_priority_hint_val,
+                    spectrum_peak_error=spectrum_peak_error,
                     chart_ocr_text=ocr_text,
                     parse_ok=fields["parse_ok"],
                     parse_notes=fields["parse_notes"],
