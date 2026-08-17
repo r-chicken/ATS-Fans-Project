@@ -81,9 +81,10 @@ CHROME_SKIP_FRAC = 0.12
 # against):
 MAX_PLATEAU_WIDTH_PX = 8    # widest a genuine single-frequency peak should look
 PLATEAU_ROW_TOL_PX = 2      # row jitter allowed while still calling two columns "level"
-GAP_MERGE_PX = 3            # small antialiasing/letter gaps to bridge when measuring a run's height
+GAP_MERGE_PX = 6            # small antialiasing/letter gaps to bridge when measuring a run's height
 MAX_RUN_HEIGHT_FRAC = 0.25  # fraction of plot height a genuine peak's own column may run solid
 MIN_RUN_HEIGHT_PX = 2       # below this, treat it as compression/antialiasing noise, not a mark
+MAX_PEEL_PASSES = 6         # how many stacked marker layers a single column can have peeled off it
 
 
 def detect_spectrum_unit(ocr_text: str) -> str:
@@ -293,37 +294,36 @@ def _ink_mask(region: np.ndarray) -> np.ndarray:
 
 # A run whose pixels are (mostly) this saturated a blue is exempt from the
 # tall-run marker/cursor-line cap in _find_peak_pixel - see that function's
-# docstring point 2, and _is_saturated_blue below for why this is a fixed
-# domain threshold rather than a per-report "dominant color" estimate.
-SATURATED_BLUE_MAX_RG = 60
-SATURATED_BLUE_MIN_B = 180
-SATURATED_BLUE_MIN_FRAC = 0.5  # fraction of a run's own pixels that must qualify
+# docstring point 2, and _is_blue_ish below for why this is a fixed domain
+# threshold rather than a per-report "dominant color" estimate.
+BLUE_ISH_MIN_MARGIN = 70  # how much B must exceed BOTH R and G by
+BLUE_ISH_MIN_FRAC = 0.5   # fraction of a run's own pixels that must qualify
 
 
-def _is_saturated_blue(pixels: np.ndarray) -> np.ndarray:
-    """True per-pixel for a real, richly-saturated blue (R and G both low,
-    B clearly dominant) - calibrated against real reports' own baseline
-    trace color (sampled from ordinary noise-floor ink, well away from any
-    marker): (26, 6, 233), (30, 12, 228), (22, 10, 236) all comfortably
-    clear SATURATED_BLUE_MAX_RG=60. A red cursor/order-marker line, e.g.
-    (191, 0, 0), fails outright (R way over the cap). Two real reports use
-    a lighter, washed-out blue for their trace instead - (128, 122, 245),
-    (125, 128, 253) - which does NOT qualify here on purpose: on one of
-    those two reports, a decorative marker-label text block happened to be
-    rendered in almost exactly that same washed-out blue (126, 123, 255),
-    close enough that no per-report color estimate (tried: most total
-    pixels, then most distinct columns touched - both picked the text
-    color, not the trace's, on that report) could tell real data and
-    decorative text apart there. This fixed, deliberately narrow threshold
-    sidesteps that: it only ever exempts a run when it's confident, and
-    reports whose trace doesn't qualify just get the ordinary run-height
-    cap applied to everything, same as before this exemption existed -
-    which was already the correct answer on both washed-out-blue reports
-    seen so far, since neither had a genuine peak tall enough to need the
-    exemption.
+def _is_blue_ish(pixels: np.ndarray) -> np.ndarray:
+    """True per-pixel wherever B is clearly the dominant channel - the
+    genuine trace's own color on every real report seen, whether a rich,
+    saturated blue (26, 6, 233) or a lighter, washed-out one (125, 128,
+    253) - both comfortably clear BLUE_ISH_MIN_MARGIN=40 on both channels.
+
+    Deliberately broad rather than a tight "must be richly saturated"
+    test (tried first): on one real report, the genuine trace itself is
+    that lighter, washed-out blue, and a tight saturation requirement
+    wrongly excluded a real, severe peak drawn in it, right along with the
+    decorative marker text that happens to share a similar hue on that
+    same report. What actually needs excluding is red and magenta, the
+    two on-chart marker colors confirmed on real reports (a cursor/order-
+    marker line, and a harmonic-flag callout line/box) - and both fail
+    this test cleanly: red (191, 0, 0) has B far below R; magenta
+    (250, 0, 253) has R essentially tied with B, not clearly behind it.
+    A cyan zoom-box marker color (126, 213, 253), also confirmed on a real
+    report, fails too - B only edges out G by ~40, under the margin -
+    though that one is caught by the width-plateau check regardless of
+    color, since a box is many columns wide; this is defense in depth for
+    it, not the only thing standing between it and a false read.
     """
-    r, g, b = pixels[:, 0], pixels[:, 1], pixels[:, 2]
-    return (r < SATURATED_BLUE_MAX_RG) & (g < SATURATED_BLUE_MAX_RG) & (b > SATURATED_BLUE_MIN_B)
+    r, g, b = pixels[:, 0].astype(int), pixels[:, 1].astype(int), pixels[:, 2].astype(int)
+    return (b - r > BLUE_ISH_MIN_MARGIN) & (b - g > BLUE_ISH_MIN_MARGIN)
 
 
 def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: int):
@@ -339,10 +339,20 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
        same topmost ink row. A real spectral peak is one frequency wide,
        at most a couple of pixels - so any run of more than
        MAX_PLATEAU_WIDTH_PX columns at the same height is a block, not
-       data, and every column in it is dropped. Applies regardless of
-       color - a genuine trace essentially never forms a flat multi-column
-       plateau (real spectral noise is jagged), so this is safe to apply
-       universally.
+       data. Applies regardless of color - a genuine trace essentially
+       never forms a flat multi-column plateau (real spectral noise is
+       jagged), so this is safe to apply universally. A column inside a
+       detected block does NOT just get dropped, though - it gets peeled:
+       the block's own run in that column is skipped, and whatever ink
+       comes after it (below it) in that same column is looked at next,
+       same as for a tall thin mark below. This matters because a marker
+       can sit directly ON TOP of genuine data in the same column, not
+       just next to it - confirmed on a real report, a bar box + its
+       callout line hid a real peak that was over a full labeled gridline
+       taller than the peak this function used to report before that
+       column was ever looked at below the box. See MAX_PEEL_PASSES for
+       how many stacked layers one column can have peeled before giving up
+       on it.
     2. Tall thin marks that AREN'T richly-saturated blue - rotated
        marker-label text, a UI cursor/order-marker line (e.g. red, with a
        small square handle sitting right at/above the frame's top edge -
@@ -356,22 +366,21 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
        GAP_MERGE_PX bridges gaps that small before measuring, so the
        marker doesn't masquerade as a short (real-looking) run. This
        height cap is deliberately NOT applied to a run that's (mostly)
-       richly-saturated blue - see _is_saturated_blue - a genuine sharp,
-       narrow-bandwidth resonance can legitimately run near-vertically for
-       most of the plot's height in a single column (confirmed on a real
-       report: a real peak's own column ran ~300px on a 467px-tall plot,
-       comfortably over what an earlier, color-blind version of this cap
-       excluded as "too tall to be real data" - the taller and more severe
-       the true peak, the more likely that mistake was to happen, which is
+       blue-dominant in hue - see _is_blue_ish - a genuine sharp, narrow-
+       bandwidth resonance can legitimately run near-vertically for most
+       of the plot's height in a single column (confirmed on two real
+       reports, one with a richly-saturated trace and one with a lighter,
+       washed-out one - the taller and more severe the true peak, the more
+       likely a color-blind height cap is to wrongly exclude it, which is
        exactly backwards), and the real peak is reliably THICKER (more ink
        per row) than a hairline cursor/order-marker line even where they
-       sit close together in x. _is_saturated_blue uses a fixed threshold
-       tuned from real reports' own baseline trace color rather than a
-       per-report "what's the dominant color here" estimate - tried that
+       sit close together in x. _is_blue_ish uses a fixed threshold tuned
+       from real reports' own baseline trace color rather than a per-
+       report "what's the dominant color here" estimate - tried that
        first (twice), and both approaches picked a report's decorative
        marker-label text over its actual trace on a report where the two
-       happen to be rendered in nearly the same (unsaturated) blue - see
-       that function's docstring for the full story before changing this.
+       happen to be rendered in a similar hue - see that function's
+       docstring for the full story before changing this.
     3. Small annotations directly on a real peak (a circle, a number, a
        triangle) - a few pixels, sitting right at or just above the
        genuine tip. These pass every filter above and are left in on
@@ -388,52 +397,136 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
     H, W = ink.shape
     run_cap = MAX_RUN_HEIGHT_FRAC * H
 
-    topmost = np.full(W, H)
+    def _first_run(idx: np.ndarray, col: int) -> np.ndarray:
+        """Topmost run within already-floor-filtered idx (this column's
+        candidate ink rows). Splits on a row gap bigger than GAP_MERGE_PX,
+        AND on a sustained change between blue-dominant and not -
+        confirmed necessary on a real report where a marker's callout line
+        runs directly INTO a genuine peak with no row gap between them at
+        all (the line terminates exactly where the peak's own trace
+        begins) - row-gap-only splitting saw one continuous run the whole
+        way through both, which (in stage 1 below) swallowed the real peak
+        into the marker block's own measured extent, well past where the
+        marker itself actually ends. A single-pixel color flicker
+        (antialiasing) does NOT split - only a change that holds for at
+        least MIN_RUN_HEIGHT_PX rows counts, so a genuine peak's own
+        antialiased edge pixels don't fragment it.
+        """
+        row_gap_breaks = np.where(np.diff(idx) > GAP_MERGE_PX)[0]
+        is_blue = _is_blue_ish(region[idx, col])
+        color_breaks = []
+        run_start = 0
+        for i in range(1, len(is_blue)):
+            if is_blue[i] != is_blue[run_start]:
+                end = min(i + MIN_RUN_HEIGHT_PX, len(is_blue))
+                if is_blue[i:end].all() if is_blue[i] else (~is_blue[i:end]).all():
+                    color_breaks.append(i - 1)
+                    run_start = i
+        breaks = np.union1d(row_gap_breaks, np.array(color_breaks, dtype=int))
+        return np.split(idx, breaks + 1)[0]
+
+    def _topmost_at_or_below(floor: np.ndarray) -> np.ndarray:
+        """Per-column topmost ink row at/below that column's floor, H if
+        none. Uses ANY ink (color-blind) - purely for locating wide
+        marker blocks (docstring point 1), which is color-independent by
+        design."""
+        result = np.full(W, H)
+        for c in range(W):
+            idx = np.where(ink[:, c])[0]
+            idx = idx[idx >= floor[c]]
+            if len(idx):
+                result[c] = idx[0]
+        return result
+
+    # Stage 1: locate wide flat-topped marker blocks and skip ALL of each
+    # one in a single move, advancing every column in it to ONE SHARED
+    # floor - not peeling each column in the block separately at its own
+    # pace. That distinction matters and was the source of two real bugs:
+    # a block's internal ink is rarely uniform column-to-column (letter-
+    # shaped gaps in a label, a "ladder" of small handle marks) - if each
+    # column instead peels its own first run independently, columns whose
+    # own first chunk happens to be short finish an early "layer" faster
+    # than their neighbors, drift out of row-alignment with them on the
+    # very next look, and then read as their own narrow (not-wide-
+    # plateau), and often short-enough-to-look-real, group - even though
+    # they're still squarely inside the same marker block. A shared floor
+    # can't drift apart like that: the whole block moves together.
+    floor = np.zeros(W, dtype=int)
+    for _ in range(MAX_PEEL_PASSES):
+        topmost = _topmost_at_or_below(floor)
+        if (topmost == H).all():
+            break
+        any_wide = False
+        c = 0
+        while c < W:
+            if topmost[c] == H:
+                c += 1
+                continue
+            c2 = c
+            while c2 + 1 < W and topmost[c2 + 1] != H and abs(int(topmost[c2 + 1]) - int(topmost[c])) <= PLATEAU_ROW_TOL_PX:
+                c2 += 1
+            if c2 - c + 1 > MAX_PLATEAU_WIDTH_PX:
+                any_wide = True
+                # Shared floor = just past the farthest this block's own
+                # (gap-merged) ink reaches, across every column in it -
+                # not just the shallowest one, so a stray deeper column
+                # doesn't leave the rest of the block only half-cleared.
+                block_end = 0
+                for cc in range(c, c2 + 1):
+                    idx = np.where(ink[:, cc])[0]
+                    idx = idx[idx >= floor[cc]]
+                    if len(idx) == 0:
+                        continue
+                    block_end = max(block_end, int(_first_run(idx, cc)[-1]))
+                for cc in range(c, c2 + 1):
+                    floor[cc] = block_end + 1
+            c = c2 + 1
+        if not any_wide:
+            break
+
+    # Stage 2: within what's left (floor already past every wide block),
+    # exclude a tall thin mark that ISN'T blue-dominant in hue (docstring
+    # point 2) - a real cursor/order-marker line, or leftover marker-label
+    # text too narrow to have been a wide plateau above. Column-
+    # independent, so the drift problem stage 1 has doesn't apply here -
+    # each column is judged only against its own ink, never grouped with
+    # neighbors, so there's nothing to desynchronize.
+    resolved = np.zeros(W, dtype=bool)
+    resolved_topmost = np.full(W, H)
     for c in range(W):
         idx = np.where(ink[:, c])[0]
-        if len(idx):
-            topmost[c] = idx[0]
+        idx = idx[idx >= floor[c]]
+        for _ in range(MAX_PEEL_PASSES):
+            if len(idx) == 0:
+                break
+            run = _first_run(idx, c)
+            run_len = run[-1] - run[0] + 1
+            if run_len >= MIN_RUN_HEIGHT_PX and (
+                run_len <= run_cap or _is_blue_ish(region[run, c]).mean() >= BLUE_ISH_MIN_FRAC
+            ):
+                resolved[c] = True
+                resolved_topmost[c] = run[0]
+                break
+            idx = idx[idx > run[-1]]  # too short to trust, or a tall non-blue mark - peel past it, keep looking
 
-    # Drop wide flat-topped plateaus (marker bars/boxes) - color-blind by
-    # design, see docstring point 1.
-    c = 0
-    width_ok_cols = []
-    while c < W:
-        if topmost[c] == H:
-            c += 1
-            continue
-        c2 = c
-        while c2 + 1 < W and topmost[c2 + 1] != H and abs(int(topmost[c2 + 1]) - int(topmost[c])) <= PLATEAU_ROW_TOL_PX:
-            c2 += 1
-        if c2 - c + 1 <= MAX_PLATEAU_WIDTH_PX:
-            width_ok_cols.extend(range(c, c2 + 1))
-        c = c2 + 1
-
-    # Drop columns whose own (gap-merged) topmost run is implausibly tall
-    # for a single spectral line UNLESS that run is (mostly) richly-
-    # saturated blue - see docstring point 2 and _is_saturated_blue.
-    valid_cols = []
-    for c in width_ok_cols:
-        idx = np.where(ink[:, c])[0]
-        splits = np.where(np.diff(idx) > GAP_MERGE_PX)[0]
-        first_run = np.split(idx, splits + 1)[0]
-        run_len = first_run[-1] - first_run[0] + 1
-        if run_len < MIN_RUN_HEIGHT_PX:
-            continue
-        if run_len <= run_cap:
-            valid_cols.append(c)
-            continue
-        run_pixels = region[first_run, c]
-        if _is_saturated_blue(run_pixels).mean() >= SATURATED_BLUE_MIN_FRAC:
-            valid_cols.append(c)
-
+    valid_cols = [c for c in range(W) if resolved[c]]
     if not valid_cols:
-        valid_cols = width_ok_cols or [c for c in range(W) if topmost[c] != H]
-    if not valid_cols:
-        return None, None
+        # Nothing ever resolved (e.g. every column is all-marker, all the
+        # way down) - fall back to plain topmost-of-any-ink so this still
+        # returns something rather than nothing.
+        any_topmost = np.full(W, H)
+        for c in range(W):
+            idx = np.where(ink[:, c])[0]
+            if len(idx):
+                any_topmost[c] = idx[0]
+        valid_cols = [c for c in range(W) if any_topmost[c] != H]
+        if not valid_cols:
+            return None, None
+        best_col = min(valid_cols, key=lambda c: any_topmost[c])
+        return y0 + int(any_topmost[best_col]), left + 2 + best_col
 
-    best_col = min(valid_cols, key=lambda c: topmost[c])
-    return y0 + int(topmost[best_col]), left + 2 + best_col
+    best_col = min(valid_cols, key=lambda c: resolved_topmost[c])
+    return y0 + int(resolved_topmost[best_col]), left + 2 + best_col
 
 
 def _floor_to_axis_label(value: float, kept_points: list[tuple[float, float]]) -> float:
