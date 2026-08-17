@@ -223,10 +223,17 @@ def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> 
     out = df[id_cols + signal_cols].copy()
     for col in signal_cols:
         # NaN (signal didn't fire) is "not applicable", not "wrong" - keep
-        # it as NaN rather than letting `NaN == true_col` silently read as
-        # False, which would make an escalation-didn't-fire row look
-        # identical to an escalation-fired-and-was-wrong row.
-        out[f"{col}_correct"] = np.where(out[col].isna(), np.nan, out[col] == out[true_col])
+        # it as a null rather than letting `NaN == true_col` silently read
+        # as False, which would make an escalation-didn't-fire row look
+        # identical to an escalation-fired-and-was-wrong row. Uses pandas'
+        # nullable "boolean" dtype specifically so this prints as
+        # True/False/<NA> - plain np.where here upcasts the whole column to
+        # float the moment a NaN is mixed in, so "correct" silently renders
+        # as 1.0/0.0 sitting right next to the priority-number columns,
+        # which reads at a glance like a 4th priority decision instead of a
+        # true/false flag.
+        correct = pd.Series(np.where(out[col].isna(), pd.NA, out[col] == out[true_col]), index=out.index)
+        out[f"{col}_correct"] = correct.astype("boolean")
     return out
 
 
