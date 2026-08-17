@@ -58,10 +58,30 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
     prior reading, e.g. the equipment's first report in the set):
       prior_date_tested, prior_spectrum_peak_amplitude,
       prior_spectrum_priority_hint, escalation_flag, escalation_reason,
-      escalation_priority_hint (the more-severe of the two hints, when
-      flagged for a threshold jump; the current reading's own hint when
-      flagged for a sharp drop, since a drop doesn't imply a specific
-      "should be" number the way a jump does)
+      escalation_trigger, escalation_priority_hint (the more-severe of the
+      two hints, when flagged for a threshold jump; the current reading's
+      own hint when flagged for a sharp drop, since a drop doesn't imply a
+      specific "should be" number the way a jump does)
+
+    escalation_trigger is a stable, parseable ("threshold_jump" and/or
+    "amplitude_drop", comma-joined) counterpart to escalation_reason's free
+    text - added specifically so callers can tell the two triggers apart
+    without string-matching escalation_reason. This distinction matters:
+    for a threshold_jump, escalation_priority_hint is always exactly this
+    row's own spectrum_priority_hint, so if the CURRENT report's stated
+    priority already reflects that jump (spectrum_priority_hint is no
+    longer more severe than what's stated now), there's nothing left to
+    flag - the analyst already caught it. amplitude_drop is different: the
+    drop itself is the concern regardless of whether the current reading's
+    number happens to match what's stated, since a low reading looks
+    completely ordinary on its own (see graph_signals.py - it has no way
+    to flag a drop by itself). A caller building its own "does the graph
+    agree with the stated priority" check should treat these two triggers
+    differently rather than collapsing both into one boolean - see
+    model.priority_recommendation_table for a worked example, and the bug
+    it was fixed to avoid (a threshold_jump the current report had already
+    caught up to was being flagged as if it were still an open
+    disagreement).
 
     Future idea, not implemented here: also compare each peak's FREQUENCY
     across dated reports for the same equipment, to catch a resonance
@@ -75,6 +95,7 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
     df["prior_spectrum_priority_hint"] = float("nan")
     df["escalation_flag"] = False
     df["escalation_reason"] = ""
+    df["escalation_trigger"] = ""
     df["escalation_priority_hint"] = float("nan")
 
     parsed_dates = df["date_tested"].apply(_parse_report_date)
@@ -107,23 +128,27 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
                 df.at[idx, "prior_spectrum_priority_hint"] = prev_hint
 
                 reasons = []
+                triggers = []
                 escalation_hint = None
                 if pd.notna(cur_hint) and pd.notna(prev_hint) and cur_hint < prev_hint:
                     reasons.append(
                         f"priority threshold jumped from {prev_hint:g} to {cur_hint:g} "
                         f"vs. the {df.at[prev_idx, 'date_tested']} test"
                     )
+                    triggers.append("threshold_jump")
                     escalation_hint = cur_hint
                 if pd.notna(cur_amp) and prev_amp > 0 and cur_amp <= prev_amp * ESCALATION_DROP_RATIO:
                     reasons.append(
                         f"amplitude dropped sharply vs. the {df.at[prev_idx, 'date_tested']} test "
                         f"({prev_amp:g} -> {cur_amp:g}) - verify sensor/mount before reading this as improvement"
                     )
+                    triggers.append("amplitude_drop")
                     if escalation_hint is None:
                         escalation_hint = cur_hint
                 if reasons:
                     df.at[idx, "escalation_flag"] = True
                     df.at[idx, "escalation_reason"] = "; ".join(reasons)
+                    df.at[idx, "escalation_trigger"] = ", ".join(triggers)
                     if escalation_hint is not None:
                         df.at[idx, "escalation_priority_hint"] = escalation_hint
 
