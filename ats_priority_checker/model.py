@@ -287,6 +287,95 @@ def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> 
     return out
 
 
+def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
+    """DEPLOYMENT-style comparison (see module docstring) - everything here
+    is checked against priority_raw/priority_num, the priority the REPORT
+    ITSELF states, same as flag_mismatches. This is flag_mismatches'
+    reasoning laid out as columns instead of folded into one flag_reason
+    string - same underlying logic, easier to scan or filter/sort on.
+
+    One column per source, plus whether that source agrees with the stated
+    priority:
+      - text_recommended_priority / text_agrees_with_stated: predicted_priority,
+        i.e. the Recommendations/Comments embedding model, on its own.
+      - graph_recommended_priority / graph_agrees_with_stated / graph_note:
+        see below - this is NOT a blend of two different numbers.
+      - any_disagreement / disagreement_source: True + "text"/"graph"/
+        "text, graph" when at least one source above doesn't agree with
+        priority_num - the same condition flag_mismatch checks (modulo the
+        low-confidence-in-stated-priority trigger, which has no single
+        number to show in a "recommended priority" column, so it isn't
+        represented here; see flag_mismatch/confidence_in_stated_priority
+        on `flagged` directly if you need that specific trigger).
+
+    On "influence from escalation" (raised in conversation - worth reading
+    if this function ever gets edited): escalation_priority_hint is NEVER
+    a different NUMBER than that same row's own spectrum_priority_hint -
+    see dataset.add_escalation_signals, where escalation_hint is always
+    just set to cur_hint. So there is only ever ONE graph-derived priority
+    number per row, not two to reconcile - graph_recommended_priority is
+    exactly spectrum_priority_hint. What escalation actually contributes is
+    a REASON to look closer that a bare spectrum reading doesn't carry:
+    a sudden amplitude drop can trip escalation_flag while
+    spectrum_priority_hint still numerically equals priority_num (a drop
+    doesn't imply "should be worse", per add_escalation_signals) - so
+    graph_agrees_with_stated checks escalation_flag in ADDITION to the
+    numeric spectrum comparison, specifically to still surface that case,
+    and graph_note explains why (escalation_reason) when it does.
+    """
+    out = pd.DataFrame(index=flagged.index)
+    for col in ("report_id", "equipment_id", "priority_raw"):
+        if col in flagged.columns:
+            out[col] = flagged[col]
+
+    stated = flagged["priority_num"]
+
+    out["text_recommended_priority"] = flagged["predicted_priority"]
+    text_agrees = flagged["predicted_priority"] == stated
+    out["text_agrees_with_stated"] = pd.Series(
+        np.where(flagged["predicted_priority"].isna(), pd.NA, text_agrees), index=flagged.index
+    ).astype("boolean")
+
+    spectrum = flagged.get("spectrum_priority_hint", pd.Series(np.nan, index=flagged.index))
+    escalation_flag = flagged.get("escalation_flag", pd.Series(False, index=flagged.index)).fillna(False)
+    escalation_reason = flagged.get("escalation_reason", pd.Series("", index=flagged.index)).fillna("")
+
+    out["graph_recommended_priority"] = spectrum
+    spectrum_disagrees = spectrum.notna() & (spectrum != stated)
+    graph_disagrees = spectrum_disagrees | escalation_flag
+    graph_has_opinion = spectrum.notna() | escalation_flag
+    out["graph_agrees_with_stated"] = pd.Series(
+        np.where(~graph_has_opinion, pd.NA, ~graph_disagrees), index=flagged.index
+    ).astype("boolean")
+
+    def _graph_note(spec_val, spec_dis, esc_flag, esc_reason, stated_val):
+        parts = []
+        if spec_dis:
+            parts.append(f"Spectrum reads priority {spec_val:g} vs. stated {stated_val:g}")
+        if esc_flag:
+            parts.append(f"escalation: {esc_reason}")
+        return "; ".join(parts)
+
+    out["graph_note"] = [
+        _graph_note(s, sd, ef, er, st)
+        for s, sd, ef, er, st in zip(spectrum, spectrum_disagrees, escalation_flag, escalation_reason, stated)
+    ]
+
+    out["any_disagreement"] = text_agrees.eq(False) | graph_disagrees
+
+    def _source(text_dis, graph_dis):
+        parts = []
+        if text_dis:
+            parts.append("text")
+        if graph_dis:
+            parts.append("graph")
+        return ", ".join(parts)
+
+    out["disagreement_source"] = [_source(not ta, gd) for ta, gd in zip(text_agrees.fillna(True), graph_disagrees)]
+
+    return out
+
+
 def save_bundle(clf: LogisticRegression, path: str | Path, embedding_model_name: str = EMBEDDING_MODEL_NAME) -> None:
     import joblib
 
