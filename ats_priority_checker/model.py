@@ -153,6 +153,83 @@ def flag_mismatches(
     return out
 
 
+def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -> dict:
+    """Score each priority SIGNAL independently against true_col, each with
+    its own per-class precision/recall/f1 - not folded into one flag/no-flag
+    number the way flag_mismatch is.
+
+    `predicted_priority` (text-only, from the Recommendations/Comments
+    embedding model) is not the only signal worth a report card of its own:
+    a report can be written in the same mild, boilerplate language every
+    other Priority 4 report uses while its own Spectrum chart reads far
+    more severe than that language suggests - the text model has no way to
+    catch that, since it never sees the chart. Scoring
+    spectrum_priority_hint and escalation_priority_hint the same way
+    predicted_priority already gets scored surfaces exactly that gap.
+
+    Reports on, when present in df:
+      - predicted_priority: the text-only model. Broadest coverage (every
+        row that went into training/cross-validation).
+      - spectrum_priority_hint: THIS report's own Spectrum peak reading -
+        no report history needed, so it's available on nearly every report
+        with a readable chart. This is the one that catches "the writeup
+        reads mild but the chart doesn't" on a single report, standalone.
+      - escalation_priority_hint: cross-report signal - THIS report's
+        Spectrum peak compared against the SAME equipment's prior dated
+        test. Only populated when escalation_flag is True, so its n will
+        be much smaller than the other two - that's expected, not a bug:
+        most reports have nothing escalating to flag, and the first-ever
+        report for a piece of equipment never has a prior test to compare
+        against at all.
+
+    Each signal is scored ONLY on the rows where it isn't null - you can't
+    score a hint that was never produced, and a signal's n here is itself
+    informative about how often it actually has something to say, not just
+    how accurate it is when it does.
+
+    Returns {signal_name: {"n": int, "report_text": str, "report_dict": dict}}
+    for whichever of the three columns are present in df; a report_dict
+    entry is None if all class-metric arrays end up empty (currently only
+    ever thrown by sklearn on genuinely undefined input, e.g. n=0).
+    """
+    from sklearn.metrics import classification_report
+
+    signal_cols = ["predicted_priority", "spectrum_priority_hint", "escalation_priority_hint"]
+    results = {}
+    for col in signal_cols:
+        if col not in df.columns:
+            continue
+        sub = df.dropna(subset=[col, true_col])
+        if len(sub) == 0:
+            results[col] = {"n": 0, "report_text": "(no rows with both a value and a ground-truth priority)", "report_dict": None}
+            continue
+        results[col] = {
+            "n": len(sub),
+            "report_text": classification_report(sub[true_col], sub[col], zero_division=0),
+            "report_dict": classification_report(sub[true_col], sub[col], zero_division=0, output_dict=True),
+        }
+    return results
+
+
+def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> pd.DataFrame:
+    """Row-level companion to priority_signal_reports: one row per report
+    with predicted_priority, spectrum_priority_hint, and
+    escalation_priority_hint side by side, plus a `*_correct` bool for each
+    against true_col - for eyeballing exactly which signal got which report
+    right, not just the aggregate precision/recall.
+    """
+    signal_cols = [c for c in ("predicted_priority", "spectrum_priority_hint", "escalation_priority_hint") if c in df.columns]
+    id_cols = [c for c in ("report_id", "equipment_id", "priority_num", true_col) if c in df.columns]
+    out = df[id_cols + signal_cols].copy()
+    for col in signal_cols:
+        # NaN (signal didn't fire) is "not applicable", not "wrong" - keep
+        # it as NaN rather than letting `NaN == true_col` silently read as
+        # False, which would make an escalation-didn't-fire row look
+        # identical to an escalation-fired-and-was-wrong row.
+        out[f"{col}_correct"] = np.where(out[col].isna(), np.nan, out[col] == out[true_col])
+    return out
+
+
 def save_bundle(clf: LogisticRegression, path: str | Path, embedding_model_name: str = EMBEDDING_MODEL_NAME) -> None:
     import joblib
 
