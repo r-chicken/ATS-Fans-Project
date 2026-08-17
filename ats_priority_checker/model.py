@@ -10,6 +10,22 @@ implies.
 This design is meant to scale with more data later: same pipeline, same
 saved artifacts format, just re-run train_priority_classifier on a bigger
 dataset.csv as more labeled/parsed reports come in.
+
+Two different questions, two different functions - do not conflate them:
+  - "Should THIS report get a second look?" -> flag_mismatches(). Compares
+    every signal against priority_num, the priority the REPORT ITSELF
+    states - the only number that exists on a brand-new report nobody has
+    reviewed yet (see dataset.build_dataset's Section 7 use case: scoring
+    new PDFs with no labels at all). This is the function that has to run
+    without ground truth, so it's built to never need it.
+  - "Is this system actually any good?" -> priority_signal_reports() /
+    priority_signal_table(). Compare every signal against true_priority,
+    YOUR hand-corrected ground truth - only available for the subset
+    you've manually labeled (labeling.py). On rows you've already labeled
+    "mismatch", agreement with the stated priority_num is close to a BAD
+    sign (it means the signal reproduced the very error you caught), so
+    don't read flag_mismatch as a quality check on those rows - go
+    straight to priority_signal_reports/priority_signal_table instead.
 """
 from __future__ import annotations
 
@@ -109,6 +125,23 @@ def flag_mismatches(
     concrete evidence) - real prioritization is holistic, so a raw
     threshold rule landing one level more cautious than the stated
     priority is normal and not evidence of an error.
+
+    IMPORTANT - what "stated priority" means here: every comparison in this
+    function is against priority_num (what the report itself says), NEVER
+    against true_priority (your hand-corrected ground truth), even when
+    true_priority is sitting right there in df. That's deliberate, not an
+    oversight - this function's whole job is to work on a report NOBODY has
+    reviewed yet, where true_priority doesn't exist. Do not change this to
+    prefer true_priority when available "for accuracy" - that would make
+    flag_mismatch silently behave differently on your labeled rows than on
+    every future unlabeled report, which defeats the point of validating it
+    on the labeled set in the first place. If you want to know how well
+    flag_mismatch (or any one signal) tracks your actual corrections, use
+    priority_signal_reports()/priority_signal_table() on the labeled
+    subset - don't repurpose this function's output for that; a False here
+    on an already-hand-labeled "mismatch" row does NOT mean the signal got
+    it right, only that it agreed with the report's own (already-wrong)
+    number.
     """
     out = df.copy()
     out["predicted_priority"] = pred
@@ -154,9 +187,15 @@ def flag_mismatches(
 
 
 def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -> dict:
-    """Score each priority SIGNAL independently against true_col, each with
-    its own per-class precision/recall/f1 - not folded into one flag/no-flag
-    number the way flag_mismatch is.
+    """VALIDATION, not deployment - see module docstring. Score each priority
+    SIGNAL independently against true_col (your hand-corrected ground
+    truth), each with its own per-class precision/recall/f1 - not folded
+    into one flag/no-flag number the way flag_mismatch is, and not scored
+    against priority_num the way flag_mismatch is either.
+
+    Only meaningful on rows where true_col is populated - i.e. your labeled
+    subset. There's no equivalent of this for brand-new unlabeled reports;
+    that's what flag_mismatches() is for instead.
 
     `predicted_priority` (text-only, from the Recommendations/Comments
     embedding model) is not the only signal worth a report card of its own:
@@ -212,11 +251,22 @@ def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -
 
 
 def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> pd.DataFrame:
-    """Row-level companion to priority_signal_reports: one row per report
-    with predicted_priority, spectrum_priority_hint, and
-    escalation_priority_hint side by side, plus a `*_correct` bool for each
-    against true_col - for eyeballing exactly which signal got which report
-    right, not just the aggregate precision/recall.
+    """VALIDATION, not deployment - see module docstring, and
+    priority_signal_reports's docstring above. Row-level companion to
+    priority_signal_reports: one row per report with predicted_priority,
+    spectrum_priority_hint, and escalation_priority_hint side by side, plus
+    a `*_correct` bool for each against true_col (your hand-corrected
+    ground truth, NOT priority_num) - for eyeballing exactly which signal
+    got which report right, not just the aggregate precision/recall.
+
+    flag_mismatch is deliberately NOT one of the columns here - it isn't a
+    per-signal prediction, it's an OR of several signals compared against
+    priority_num, so "flag_mismatch_correct" would conflate two different
+    questions (see module docstring) rather than answer either one
+    cleanly. If you want to know whether flag_mismatch itself is reliable,
+    compare it against (true_col != priority_num) directly - the
+    notebook's Section 5 already does this with precision_score/
+    recall_score/confusion_matrix.
     """
     signal_cols = [c for c in ("predicted_priority", "spectrum_priority_hint", "escalation_priority_hint") if c in df.columns]
     id_cols = [c for c in ("report_id", "equipment_id", "priority_num", true_col) if c in df.columns]
