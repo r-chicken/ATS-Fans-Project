@@ -85,6 +85,7 @@ GAP_MERGE_PX = 6            # small antialiasing/letter gaps to bridge when meas
 MAX_RUN_HEIGHT_FRAC = 0.25  # fraction of plot height a genuine peak's own column may run solid
 MIN_RUN_HEIGHT_PX = 2       # below this, treat it as compression/antialiasing noise, not a mark
 MAX_PEEL_PASSES = 6         # how many stacked marker layers a single column can have peeled off it
+FULL_HEIGHT_TOL_PX = 2      # how close to literally touching both frame edges still counts as "spans it"
 
 
 def detect_spectrum_unit(ocr_text: str) -> str:
@@ -388,6 +389,21 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
        an acceptable trade for not needing a marker color palette that
        would have to be hand-maintained per report style.
 
+    Ahead of all three checks above, one column-local, color-blind rule
+    runs first: a column whose ink runs unbroken from the very top row of
+    the plot area to the very bottom row (within FULL_HEIGHT_TOL_PX of
+    literally touching both edges) is thrown out outright, before
+    anything else looks at it. This is the UI cursor/order-marker line
+    from point 2 above, caught by its shape alone this time instead of by
+    failing the blue-ish test - confirmed on a real report to run exactly
+    row 0 to the last row, edge to edge, which no genuine peak does (even
+    a severe one - see point 2's own genuine-tall-peak examples, neither
+    reaches literally either edge). Doesn't change any known report's
+    reading (the height-cap-plus-color-check in point 2 already excludes
+    it) - it's a second, color-independent way to reach the same answer,
+    which matters because point 2's blue-ish check is a per-pixel color
+    judgment call and this one isn't.
+
     Returns (row, col) of the winning pixel, or (None, None) if the plot
     area has no ink at all.
     """
@@ -396,6 +412,19 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
     ink = _ink_mask(region)
     H, W = ink.shape
     run_cap = MAX_RUN_HEIGHT_FRAC * H
+
+    # Color-blind full-height exclusion (see docstring): a column whose
+    # ink is unbroken (gap-merged) from row 0 to row H-1 is entirely a
+    # cursor/order-marker line, nothing left in it worth looking at.
+    floor = np.zeros(W, dtype=int)
+    for c in range(W):
+        idx = np.where(ink[:, c])[0]
+        if len(idx) == 0:
+            continue
+        gaps = np.where(np.diff(idx) > GAP_MERGE_PX)[0]
+        first = np.split(idx, gaps + 1)[0]
+        if first[0] <= FULL_HEIGHT_TOL_PX and first[-1] >= H - 1 - FULL_HEIGHT_TOL_PX:
+            floor[c] = H
 
     def _first_run(idx: np.ndarray, col: int) -> np.ndarray:
         """Topmost run within already-floor-filtered idx (this column's
@@ -451,7 +480,8 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
     # plateau), and often short-enough-to-look-real, group - even though
     # they're still squarely inside the same marker block. A shared floor
     # can't drift apart like that: the whole block moves together.
-    floor = np.zeros(W, dtype=int)
+    # (floor was already initialized above - full-height columns start
+    # this loop pre-excluded.)
     for _ in range(MAX_PEEL_PASSES):
         topmost = _topmost_at_or_below(floor)
         if (topmost == H).all():
