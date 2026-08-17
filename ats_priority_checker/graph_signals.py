@@ -290,6 +290,42 @@ def _ink_mask(region: np.ndarray) -> np.ndarray:
     return ~(white | gray)
 
 
+
+# A run whose pixels are (mostly) this saturated a blue is exempt from the
+# tall-run marker/cursor-line cap in _find_peak_pixel - see that function's
+# docstring point 2, and _is_saturated_blue below for why this is a fixed
+# domain threshold rather than a per-report "dominant color" estimate.
+SATURATED_BLUE_MAX_RG = 60
+SATURATED_BLUE_MIN_B = 180
+SATURATED_BLUE_MIN_FRAC = 0.5  # fraction of a run's own pixels that must qualify
+
+
+def _is_saturated_blue(pixels: np.ndarray) -> np.ndarray:
+    """True per-pixel for a real, richly-saturated blue (R and G both low,
+    B clearly dominant) - calibrated against real reports' own baseline
+    trace color (sampled from ordinary noise-floor ink, well away from any
+    marker): (26, 6, 233), (30, 12, 228), (22, 10, 236) all comfortably
+    clear SATURATED_BLUE_MAX_RG=60. A red cursor/order-marker line, e.g.
+    (191, 0, 0), fails outright (R way over the cap). Two real reports use
+    a lighter, washed-out blue for their trace instead - (128, 122, 245),
+    (125, 128, 253) - which does NOT qualify here on purpose: on one of
+    those two reports, a decorative marker-label text block happened to be
+    rendered in almost exactly that same washed-out blue (126, 123, 255),
+    close enough that no per-report color estimate (tried: most total
+    pixels, then most distinct columns touched - both picked the text
+    color, not the trace's, on that report) could tell real data and
+    decorative text apart there. This fixed, deliberately narrow threshold
+    sidesteps that: it only ever exempts a run when it's confident, and
+    reports whose trace doesn't qualify just get the ordinary run-height
+    cap applied to everything, same as before this exemption existed -
+    which was already the correct answer on both washed-out-blue reports
+    seen so far, since neither had a genuine peak tall enough to need the
+    exemption.
+    """
+    r, g, b = pixels[:, 0], pixels[:, 1], pixels[:, 2]
+    return (r < SATURATED_BLUE_MAX_RG) & (g < SATURATED_BLUE_MAX_RG) & (b > SATURATED_BLUE_MIN_B)
+
+
 def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: int):
     """Find the (row, col) of the Spectrum plot's tallest genuine data
     peak, in panel-pixel coordinates - the core of "read the actual graph,
@@ -303,20 +339,42 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
        same topmost ink row. A real spectral peak is one frequency wide,
        at most a couple of pixels - so any run of more than
        MAX_PLATEAU_WIDTH_PX columns at the same height is a block, not
-       data, and every column in it is dropped.
-    2. Tall thin marks - rotated marker-label text, or a UI cursor/guide
-       line - only 1-2 columns wide, so the width check above doesn't
-       catch them. What does: their own column runs solid ink for most of
-       the plot's height (verified on a real report: 318-474px on a
-       ~430px-tall plot), while even a very tall genuine peak's line only
-       ran ~50-60px in a single column on the reports checked. Antialiasing
-       and letter-shaped gaps inside a marker can chop that long run into
-       several short ones a few pixels apart - GAP_MERGE_PX bridges gaps
-       that small before measuring, so the marker doesn't masquerade as a
-       short (real-looking) run.
+       data, and every column in it is dropped. Applies regardless of
+       color - a genuine trace essentially never forms a flat multi-column
+       plateau (real spectral noise is jagged), so this is safe to apply
+       universally.
+    2. Tall thin marks that AREN'T richly-saturated blue - rotated
+       marker-label text, a UI cursor/order-marker line (e.g. red, with a
+       small square handle sitting right at/above the frame's top edge -
+       confirmed against real reports; the small circle sitting just below
+       that handle is part of the same marker, not a peak annotation) -
+       only 1-2 columns wide, so the width check above doesn't catch them.
+       What does: their own column runs solid ink for most of the plot's
+       height (verified on a real report: 318-474px on a ~430px-tall
+       plot). Antialiasing and letter-shaped gaps inside a marker can chop
+       that long run into several short ones a few pixels apart -
+       GAP_MERGE_PX bridges gaps that small before measuring, so the
+       marker doesn't masquerade as a short (real-looking) run. This
+       height cap is deliberately NOT applied to a run that's (mostly)
+       richly-saturated blue - see _is_saturated_blue - a genuine sharp,
+       narrow-bandwidth resonance can legitimately run near-vertically for
+       most of the plot's height in a single column (confirmed on a real
+       report: a real peak's own column ran ~300px on a 467px-tall plot,
+       comfortably over what an earlier, color-blind version of this cap
+       excluded as "too tall to be real data" - the taller and more severe
+       the true peak, the more likely that mistake was to happen, which is
+       exactly backwards), and the real peak is reliably THICKER (more ink
+       per row) than a hairline cursor/order-marker line even where they
+       sit close together in x. _is_saturated_blue uses a fixed threshold
+       tuned from real reports' own baseline trace color rather than a
+       per-report "what's the dominant color here" estimate - tried that
+       first (twice), and both approaches picked a report's decorative
+       marker-label text over its actual trace on a report where the two
+       happen to be rendered in nearly the same (unsaturated) blue - see
+       that function's docstring for the full story before changing this.
     3. Small annotations directly on a real peak (a circle, a number, a
        triangle) - a few pixels, sitting right at or just above the
-       genuine tip. These pass both filters above and are left in on
+       genuine tip. These pass every filter above and are left in on
        purpose: they shift the reading by at most a few pixels, and that's
        an acceptable trade for not needing a marker color palette that
        would have to be hand-maintained per report style.
@@ -336,7 +394,8 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
         if len(idx):
             topmost[c] = idx[0]
 
-    # Drop wide flat-topped plateaus (marker bars/boxes).
+    # Drop wide flat-topped plateaus (marker bars/boxes) - color-blind by
+    # design, see docstring point 1.
     c = 0
     width_ok_cols = []
     while c < W:
@@ -351,14 +410,21 @@ def _find_peak_pixel(arr: np.ndarray, left: int, right: int, top: int, bottom: i
         c = c2 + 1
 
     # Drop columns whose own (gap-merged) topmost run is implausibly tall
-    # for a single spectral line - a marker-label/cursor line, not data.
+    # for a single spectral line UNLESS that run is (mostly) richly-
+    # saturated blue - see docstring point 2 and _is_saturated_blue.
     valid_cols = []
     for c in width_ok_cols:
         idx = np.where(ink[:, c])[0]
         splits = np.where(np.diff(idx) > GAP_MERGE_PX)[0]
         first_run = np.split(idx, splits + 1)[0]
         run_len = first_run[-1] - first_run[0] + 1
-        if MIN_RUN_HEIGHT_PX <= run_len <= run_cap:
+        if run_len < MIN_RUN_HEIGHT_PX:
+            continue
+        if run_len <= run_cap:
+            valid_cols.append(c)
+            continue
+        run_pixels = region[first_run, c]
+        if _is_saturated_blue(run_pixels).mean() >= SATURATED_BLUE_MIN_FRAC:
             valid_cols.append(c)
 
     if not valid_cols:
