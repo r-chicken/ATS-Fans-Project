@@ -163,7 +163,26 @@ MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 # ran with it. Case-sensitive anchors can't do that; the inner descriptive
 # word(s) (Shaft/End/Bearing/...) stay case-flexible since only the two
 # ends need to be trustworthy.
-_MEASUREMENT_POINT_CORE_RE = re.compile(r"[FM][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA]\b")
+#
+# The direction letter's own end isn't always a clean word boundary either
+# - confirmed on a real report, the unit suffix can end up glued directly
+# onto it with no space at all ("Mtr Shaft AIPS", not "... A IPS"), so a
+# plain \b there would miss it (no boundary between "A" and "I", both word
+# characters). (?=[^a-z]|$) instead: stop right after the direction letter
+# as long as what follows ISN'T a lowercase letter - a glued-on suffix
+# like "IPS" starts uppercase, so this still cuts it off ("Mtr Shaft A"),
+# while a genuine longer word that happened to start with H/V/A (lowercase
+# continuing right after) would fail this and correctly NOT be treated as
+# the end.
+_MEASUREMENT_POINT_CORE_RE = re.compile(r"[FM][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA](?=[^a-z]|$)")
+
+# Known OCR misreads worth correcting outright rather than leaving to the
+# repetition-voting below to (usually) outvote - confirmed on real reports:
+# "Mtr" -> "Mir" often enough that a single image's OCR pass can plausibly
+# get MORE than half its repeats wrong, not just the occasional one-off a
+# majority vote shrugs off. Applied before the core-trim above so a
+# corrected "Mtr" still matches the [FM] anchor.
+_KNOWN_OCR_FIXES = [(re.compile(r"\bMir\b"), "Mtr")]
 
 
 def detect_measurement_point(ocr_text: str) -> str | None:
@@ -184,15 +203,20 @@ def detect_measurement_point(ocr_text: str) -> str | None:
     doesn't contain a recognizable "{Fan|Mtr} ... {H|V|A}" span at all
     falls back to itself, stripped, rather than being dropped outright -
     better to surface an unfamiliar label than silently lose the row.
-    Confirmed against 10 real reports spanning 6 distinct locations - every
-    one resolved correctly even when 1 of 4 repeats had a stray OCR error
-    (e.g. "Mir" for "Mtr").
+    Known OCR misreads (see _KNOWN_OCR_FIXES) are corrected explicitly
+    rather than left to this voting to sort out - a real image can plausibly
+    get more than half its own repeats wrong on a misread that's common
+    enough to be worth naming outright, which plain majority voting alone
+    wouldn't survive. Confirmed against 11 real reports spanning 6 distinct
+    locations.
     """
     from collections import Counter
 
     matches = [m.strip() for m in MEASUREMENT_POINT_RE.findall(ocr_text) if m.strip()]
     cleaned = []
     for m in matches:
+        for pattern, fix in _KNOWN_OCR_FIXES:
+            m = pattern.sub(fix, m)
         core = _MEASUREMENT_POINT_CORE_RE.search(m)
         cleaned.append(core.group(0).strip() if core else m)
     cleaned = [c for c in cleaned if c]
