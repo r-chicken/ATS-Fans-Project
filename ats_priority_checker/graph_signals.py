@@ -140,29 +140,51 @@ def detect_spectrum_unit(ocr_text: str) -> str:
 # escalation matching).
 MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 
+# The label this project's ATS software prints usually ends with a UNIT
+# designator tacked onto the actual location - "Mtr Shaft H IPS", "Fan
+# Shaft H gE3" - not part of the physical measurement point itself (which
+# shaft, which end, which direction), just which unit that one chart
+# happened to be in, and OCR-unstable in a way the location words aren't:
+# confirmed on real reports, the exact same physical sensor read as "gE3"
+# on one visit's scan and "g&3" on another's. Stripped so measurement_point
+# reflects only the physical location ("Mtr Shaft H", "Fan End H") - both
+# so it's actually readable, and so add_escalation_signals' grouping isn't
+# quietly fragmented by this specific OCR noise (two reports of the SAME
+# sensor location, on the same equipment, no longer failing to match each
+# other's group just because "gE3" happened to OCR differently that day).
+# Covers every variant seen so far: IPS, gE / gE3 (and the "&"-for-E OCR
+# slip), bare G, G's - not guaranteed exhaustive against a variant that
+# hasn't shown up yet, but harmless to miss (falls back to the un-stripped
+# label, same as before this existed).
+_UNIT_SUFFIX_RE = re.compile(r"\s+(?:g[e&]?\d*'?s?|ips)$", re.IGNORECASE)
+
 
 def detect_measurement_point(ocr_text: str) -> str | None:
     """Best-effort read of the sensor location/direction label from the
-    chart's own panel titles (e.g. "Mtr Shaft H IPS", "Fan Shaft H gE3") -
-    returns None if nothing matched.
+    chart's own panel titles (e.g. "Mtr Shaft H", "Fan End H") - returns
+    None if nothing matched.
 
     The same label is printed redundantly under all three panels
     (Spectrum, Waterfall, Trend) on every real report seen, so rather than
-    trusting whichever match comes first, this takes the most common exact
-    string across all of them - the same "let repetition outvote a one-off
-    OCR slip" idea _read_y_axis_ticks uses for tick labels, just simpler
-    since there's no numeric fitting involved here, only picking a mode.
-    Confirmed against 10 real reports spanning 6 distinct location labels
-    ("Mtr Shaft H IPS", "Mtr/Fan Shaft H gE3", "Mtr/Fan End H gE3") - every
-    one resolved correctly even when 1 of 4 repeats had a stray OCR error
-    (e.g. "Mir" for "Mtr").
+    trusting whichever match comes first, this takes the most common
+    string across all of them (after stripping the unit suffix - see
+    _UNIT_SUFFIX_RE - from each one first, so noise there doesn't split
+    votes for what's really the same location across repeats within one
+    image, not just across reports) - the same "let repetition outvote a
+    one-off OCR slip" idea _read_y_axis_ticks uses for tick labels, just
+    simpler since there's no numeric fitting involved here, only picking a
+    mode. Confirmed against 10 real reports spanning 6 distinct locations -
+    every one resolved correctly even when 1 of 4 repeats had a stray OCR
+    error (e.g. "Mir" for "Mtr").
     """
     from collections import Counter
 
     matches = [m.strip() for m in MEASUREMENT_POINT_RE.findall(ocr_text) if m.strip()]
-    if not matches:
+    cleaned = [_UNIT_SUFFIX_RE.sub("", m).strip() for m in matches]
+    cleaned = [c for c in cleaned if c]
+    if not cleaned:
         return None
-    return Counter(matches).most_common(1)[0][0]
+    return Counter(cleaned).most_common(1)[0][0]
 
 
 def _crop_spectrum_panel(chart_image: Image.Image) -> Image.Image:
