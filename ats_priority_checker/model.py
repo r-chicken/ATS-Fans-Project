@@ -298,6 +298,12 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     priority:
       - text_recommended_priority / text_agrees_with_stated: predicted_priority,
         i.e. the Recommendations/Comments embedding model, on its own.
+      - spectrum_unit / spectrum_peak_amplitude / prior_date_tested: raw
+        context copied straight through from `flagged`, not a verdict of
+        their own - included so a reviewer can see what was actually read
+        off the chart (and which earlier report it was compared against)
+        without re-opening the PDF. Present only when that column exists
+        on `flagged`, same as report_id/equipment_id/priority_raw above.
       - graph_recommended_priority / graph_agrees_with_stated / graph_note:
         see below - this is NOT a blend of two different numbers.
       - any_disagreement / disagreement_source: True + "text"/"graph"/
@@ -307,6 +313,15 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
         number to show in a "recommended priority" column, so it isn't
         represented here; see flag_mismatch/confidence_in_stated_priority
         on `flagged` directly if you need that specific trigger).
+
+    Works on any DataFrame shaped like flag_mismatches()'s output, not just
+    a labeled/cross-validated subset - pass one row per report you have
+    text_recommended_priority (and ideally spectrum/escalation columns)
+    for, whether that's every labeled report or literally every report
+    you've ever extracted. See the notebook's "recommendation table for
+    every report" cell for how to get predicted_priority onto rows that
+    were never part of the labeled cross-validation set, using the final
+    fitted model instead of cross_validated_predictions.
 
     On "influence from escalation" (raised in conversation - worth reading
     if this function ever gets edited): escalation_priority_hint is NEVER
@@ -350,6 +365,13 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     out["text_agrees_with_stated"] = pd.Series(
         np.where(flagged["predicted_priority"].isna(), pd.NA, text_agrees), index=flagged.index
     ).astype("boolean")
+
+    # Raw context behind the graph columns below, not a verdict of its own -
+    # included so a reviewer can see WHAT was read off the chart (and when
+    # the prior comparison reading is from) without re-opening the PDF.
+    for col in ("spectrum_unit", "spectrum_peak_amplitude", "prior_date_tested"):
+        if col in flagged.columns:
+            out[col] = flagged[col]
 
     spectrum = flagged.get("spectrum_priority_hint", pd.Series(np.nan, index=flagged.index))
     escalation_flag = flagged.get("escalation_flag", pd.Series(False, index=flagged.index)).fillna(False)
