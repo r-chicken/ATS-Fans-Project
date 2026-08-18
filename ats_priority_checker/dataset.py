@@ -40,12 +40,29 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
     answered by comparing dated reports for the same equipment_id directly,
     the same thing a human reviewer would do by eye.
 
-    Groups rows by (site, equipment_id), sorts by date_tested, and for each
-    report walks backward to the nearest EARLIER report for the same
-    equipment that has a comparable reading (same spectrum_unit, both
-    amplitudes present) - not just the literal previous row, since a
-    between-visit report that failed to parse or had no usable chart image
-    shouldn't break the comparison. Flags a row when, versus that prior
+    Groups rows by (site, equipment_id, measurement_point) - NOT just
+    (site, equipment_id) - sorts by date_tested, and for each report walks
+    backward to the nearest EARLIER report in the same group that has a
+    comparable reading (same spectrum_unit, both amplitudes present) - not
+    just the literal previous row, since a between-visit report that
+    failed to parse or had no usable chart image shouldn't break the
+    comparison. measurement_point matters here because a single
+    equipment_id can cover several distinct sensor locations/directions
+    (e.g. "Mtr Shaft H IPS" vs "Fan Shaft H gE3" on the very same fan),
+    each with its OWN trend history and often its own unit - confirmed on
+    two real reports (report_011, report_013) that share an identical
+    equipment_id string but are different measurement points; grouping by
+    equipment_id alone picked the wrong "prior" report for one of them
+    (skipped right past the other, same-visit measurement_point, because
+    its unit didn't match, and landed on a genuinely older report from a
+    third visit instead). Rows where measurement_point is missing (older
+    cached data from before graph_signals.detect_measurement_point
+    existed, or a report whose chart OCR failed) fall back to grouping on
+    equipment_id alone by comparing as equal to each other (pandas
+    groupby's default NaN-equals-NaN behavior) - imperfect (it can lump
+    together two genuinely different but both-unreadable measurement
+    points), but strictly no worse than this function's behavior before
+    measurement_point existed at all. Flags a row when, versus that prior
     reading:
       - its spectrum_priority_hint bucket is MORE severe (a lower number -
         see graph_signals.py) than the prior reading's, or
@@ -121,11 +138,18 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     parsed_dates = df["date_tested"].apply(_parse_report_date)
 
-    group_cols = [c for c in ("site", "equipment_id") if c in df.columns]
+    group_cols = [c for c in ("site", "equipment_id", "measurement_point") if c in df.columns]
     if not group_cols or parsed_dates.isna().all():
         return df
 
-    for _, idxs in df.groupby(group_cols, dropna=False).groups.items():
+    # Iterate the grouper directly rather than via its .groups accessor -
+    # .groups on a dropna=False groupby raises ValueError("Categorical
+    # categories cannot be null") on some real pandas versions (confirmed
+    # on 2.1.4) the moment any group key is NaN, which measurement_point
+    # now regularly is (older cached rows, or a chart whose OCR failed).
+    # Direct iteration doesn't go through that Categorical codepath.
+    for _, sub_df in df.groupby(group_cols, dropna=False):
+        idxs = sub_df.index
         ordered = parsed_dates.loc[list(idxs)].dropna().sort_values()
         history = []  # (idx, amplitude, unit, priority_hint) for rows seen so far, most recent last
         for idx in ordered.index:
