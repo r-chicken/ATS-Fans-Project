@@ -639,20 +639,50 @@ def read_spectrum_peak(chart_image: Image.Image) -> dict:
 
 def velocity_priority_hint(amp: float) -> int:
     """Velocity (in/s) peak amplitude -> priority. >1 -> 1, 0.5-1 -> 2,
-    0.1-0.5 -> 3, <0.1 -> 4."""
+    0.14-0.5 -> 3, <0.14 -> 4.
+
+    The 3/4 boundary was refit against 799 real reports' stated priorities
+    (moved from 0.1 to 0.14 - see the conversation this is from for the
+    full derivation): with 406 Priority-4 and 35 Priority-3 reports on
+    record, 0.14 is where "predict the priority-bucket that best matches
+    what this equipment's report actually says" lands, not a guess -
+    accuracy on that data went from 76.9% to 89.5%, and Priority-3 recall
+    (catching a real Priority 3 as a 3, not letting it slip to a 4) from
+    26% (at the old, less-refined 0.3 tried in between) to 80%. The 1/2
+    boundary is untouched on purpose: the same dataset has only 2 reports
+    stated Priority 1 and 3 stated Priority 2 for this unit - nowhere near
+    enough to responsibly move a threshold away from its prior physically-
+    motivated value, so it stays put until there's more data behind it.
+    """
     if amp > 1:
         return 1
     if amp >= 0.5:
         return 2
-    if amp >= 0.1:
+    if amp >= 0.14:
         return 3
     return 4
 
 
 def acceleration_enveloping_priority_hint(amp: float) -> int:
-    """Acceleration enveloping (gE) peak amplitude -> priority. >0.54 -> 1,
-    0.3-0.54 -> 2, 0.09-0.3 -> 3, <0.09 -> 4."""
-    if amp > 0.54:
+    """Acceleration enveloping (gE) peak amplitude -> priority. >0.45 -> 1,
+    0.3-0.45 -> 2, 0.09-0.3 -> 3, <0.09 -> 4.
+
+    Only the 1 boundary was refit (from 0.54 to 0.45), against 335 real
+    reports' stated priorities (2 obvious pixel-misread outliers at 15.0
+    gE excluded - see the conversation this is from). The old 0.54 cutoff
+    scored WORSE than just always guessing Priority 4 (33.7% accuracy vs.
+    a 41.5% do-nothing baseline) and only caught 54% of real Priority-1
+    reports; 0.45 catches 78% of them for a smaller miss rate elsewhere.
+    The 2/3/4 boundaries are deliberately NOT touched: in this same data,
+    Priority 3's median amplitude (0.14) is actually LOWER than Priority
+    4's (0.18) - they are not separated by amplitude at all, in either
+    direction, no matter where a boundary is drawn. That's a property of
+    how gE priority actually gets assigned on these reports (something
+    other than peak amplitude is deciding 3 vs. 4), not a threshold-tuning
+    problem - don't try to fix it by moving these two further without new
+    evidence that the underlying relationship has changed.
+    """
+    if amp > 0.45:
         return 1
     if amp >= 0.3:
         return 2
