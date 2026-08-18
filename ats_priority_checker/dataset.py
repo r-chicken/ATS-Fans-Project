@@ -60,8 +60,8 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
       prior_spectrum_priority_hint, escalation_flag, escalation_reason,
       escalation_trigger, escalation_priority_hint (the more-severe of the
       two hints, when flagged for a threshold jump; the current reading's
-      own hint when flagged for a sharp drop, since a drop doesn't imply a
-      specific "should be" number the way a jump does)
+      own hint when flagged for a sharp drop - EXCEPT one specific case,
+      see below)
 
     escalation_trigger is a stable, parseable ("threshold_jump" and/or
     "amplitude_drop", comma-joined) counterpart to escalation_reason's free
@@ -82,6 +82,26 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
     it was fixed to avoid (a threshold_jump the current report had already
     caught up to was being flagged as if it were still an open
     disagreement).
+
+    One amplitude_drop case gets a DIFFERENT number than "the current
+    reading's own hint": a drop landing on the least-severe bucket
+    (spectrum_priority_hint == 4) from equipment that was Priority 2 or
+    more urgent last time (prior_spectrum_priority_hint <= 2) sets
+    escalation_priority_hint to 2, not 4 - confirmed against two real
+    reports (report_003, report_232) where the analyst kept the STATED
+    priority at 2 despite a reading that read as a clean Priority 4, with
+    comments explicitly second-guessing the drop ("may not have been
+    loaded during collection", "related to the slower operating speed").
+    Handing back the raw cur_hint=4 in that situation recommends LESS
+    urgency than before on zero verification - exactly backwards for a
+    trigger whose own reason text says "verify sensor/mount before reading
+    this as improvement." Landing on a fixed 2 (not the prior reading's
+    own severity, which could have been a 1) is a deliberate middle
+    ground: treat it as worth a second look, not as either "trust the
+    drop" or "assume the worst." This does NOT apply to smaller drops that
+    land on 2 or 3, or to drops from equipment that was already a 3 or 4 -
+    only the specific "reads like everything's fine now, but wasn't
+    recently" pattern those two reports illustrate.
 
     Future idea, not implemented here: also compare each peak's FREQUENCY
     across dated reports for the same equipment, to catch a resonance
@@ -138,13 +158,23 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
                     triggers.append("threshold_jump")
                     escalation_hint = cur_hint
                 if pd.notna(cur_amp) and prev_amp > 0 and cur_amp <= prev_amp * ESCALATION_DROP_RATIO:
-                    reasons.append(
+                    drop_reason = (
                         f"amplitude dropped sharply vs. the {df.at[prev_idx, 'date_tested']} test "
                         f"({prev_amp:g} -> {cur_amp:g}) - verify sensor/mount before reading this as improvement"
                     )
                     triggers.append("amplitude_drop")
                     if escalation_hint is None:
-                        escalation_hint = cur_hint
+                        # A drop straight to the least-severe bucket from
+                        # equipment that was Priority 2 or more urgent last
+                        # time doesn't get the raw (possibly unreliable)
+                        # cur_hint=4 - see the module docstring's
+                        # amplitude_drop section for why 2 specifically.
+                        if cur_hint == 4 and pd.notna(prev_hint) and prev_hint <= 2:
+                            escalation_hint = 2
+                            drop_reason += " - treating as Priority 2 pending verification, not the raw Priority 4 reading"
+                        else:
+                            escalation_hint = cur_hint
+                    reasons.append(drop_reason)
                 if reasons:
                     df.at[idx, "escalation_flag"] = True
                     df.at[idx, "escalation_reason"] = "; ".join(reasons)

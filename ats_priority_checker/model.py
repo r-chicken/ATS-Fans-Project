@@ -324,12 +324,18 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     fitted model instead of cross_validated_predictions.
 
     On "influence from escalation" (raised in conversation - worth reading
-    if this function ever gets edited): escalation_priority_hint is NEVER
-    a different NUMBER than that same row's own spectrum_priority_hint -
-    see dataset.add_escalation_signals, where escalation_hint is always
-    just set to cur_hint. So there is only ever ONE graph-derived priority
-    number per row, not two to reconcile - graph_recommended_priority is
-    exactly spectrum_priority_hint.
+    if this function ever gets edited): escalation_priority_hint is USUALLY
+    the same NUMBER as that same row's own spectrum_priority_hint - see
+    dataset.add_escalation_signals, where escalation_hint is normally just
+    set to cur_hint - but not always: a severe amplitude_drop landing on
+    Priority 4 from equipment that was Priority 2-or-more-urgent last time
+    gets escalation_priority_hint=2 specifically, NOT the raw (possibly
+    unreliable) cur_hint=4 - see that function's docstring for two real
+    reports (report_003, report_232) this was confirmed against.
+    graph_recommended_priority therefore prefers escalation_priority_hint
+    over spectrum_priority_hint whenever escalation fired with an opinion,
+    falling back to the raw spectrum reading otherwise - NOT always exactly
+    spectrum_priority_hint the way it used to be.
 
     escalation_flag (either trigger - dataset.py's escalation_trigger,
     "threshold_jump" and/or "amplitude_drop") counts as its own
@@ -374,39 +380,45 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
             out[col] = flagged[col]
 
     spectrum = flagged.get("spectrum_priority_hint", pd.Series(np.nan, index=flagged.index))
+    escalation_hint = flagged.get("escalation_priority_hint", pd.Series(np.nan, index=flagged.index))
     escalation_flag = flagged.get("escalation_flag", pd.Series(False, index=flagged.index)).fillna(False)
     escalation_reason = flagged.get("escalation_reason", pd.Series("", index=flagged.index)).fillna("")
 
-    out["graph_recommended_priority"] = spectrum
-    spectrum_disagrees = spectrum.notna() & (spectrum != stated)
-    graph_disagrees = spectrum_disagrees | escalation_flag
-    graph_has_opinion = spectrum.notna() | escalation_flag
+    # Prefer escalation_priority_hint (see docstring above) - it's the same
+    # number as spectrum_priority_hint except in the one case where it's
+    # deliberately not, and in that case it's the more-informed number.
+    graph = escalation_hint.where(escalation_hint.notna(), spectrum)
+
+    out["graph_recommended_priority"] = graph
+    graph_disagrees_on_number = graph.notna() & (graph != stated)
+    graph_disagrees = graph_disagrees_on_number | escalation_flag
+    graph_has_opinion = graph.notna() | escalation_flag
     out["graph_agrees_with_stated"] = pd.Series(
         np.where(~graph_has_opinion, pd.NA, ~graph_disagrees), index=flagged.index
     ).astype("boolean")
 
-    def _graph_note(spec_val, spec_dis, esc_flag, esc_reason, stated_val):
+    def _graph_note(g_val, g_dis, esc_flag, esc_reason, stated_val):
         parts = []
-        if spec_dis:
-            parts.append(f"Spectrum reads priority {spec_val:g} vs. stated {stated_val:g}")
+        if g_dis:
+            parts.append(f"Spectrum reads priority {g_val:g} vs. stated {stated_val:g}")
         if esc_flag:
             parts.append(f"escalation: {esc_reason}")
         return "; ".join(parts)
 
     out["graph_note"] = [
-        _graph_note(s, sd, ef, er, st)
-        for s, sd, ef, er, st in zip(spectrum, spectrum_disagrees, escalation_flag, escalation_reason, stated)
+        _graph_note(g, gd, ef, er, st)
+        for g, gd, ef, er, st in zip(graph, graph_disagrees_on_number, escalation_flag, escalation_reason, stated)
     ]
 
     out["any_disagreement"] = text_agrees.eq(False) | graph_disagrees
 
-    def _source(text_dis, spec_dis, esc_flag):
+    def _source(text_dis, g_dis, esc_flag):
         parts = []
         if text_dis:
             parts.append("text")
-        if spec_dis or esc_flag:
+        if g_dis or esc_flag:
             graph_reasons = []
-            if spec_dis:
+            if g_dis:
                 graph_reasons.append("spectrum")
             if esc_flag:
                 graph_reasons.append("severe amplitude change from previous scan")
@@ -414,8 +426,8 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
         return ", ".join(parts)
 
     out["disagreement_source"] = [
-        _source(not ta, sd, ef)
-        for ta, sd, ef in zip(text_agrees.fillna(True), spectrum_disagrees, escalation_flag)
+        _source(not ta, gd, ef)
+        for ta, gd, ef in zip(text_agrees.fillna(True), graph_disagrees_on_number, escalation_flag)
     ]
 
     return out
