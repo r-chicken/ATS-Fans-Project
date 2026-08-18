@@ -140,23 +140,30 @@ def detect_spectrum_unit(ocr_text: str) -> str:
 # escalation matching).
 MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 
-# The label this project's ATS software prints usually ends with a UNIT
-# designator tacked onto the actual location - "Mtr Shaft H IPS", "Fan
-# Shaft H gE3" - not part of the physical measurement point itself (which
-# shaft, which end, which direction), just which unit that one chart
-# happened to be in, and OCR-unstable in a way the location words aren't:
-# confirmed on real reports, the exact same physical sensor read as "gE3"
-# on one visit's scan and "g&3" on another's. Stripped so measurement_point
-# reflects only the physical location ("Mtr Shaft H", "Fan End H") - both
-# so it's actually readable, and so add_escalation_signals' grouping isn't
-# quietly fragmented by this specific OCR noise (two reports of the SAME
-# sensor location, on the same equipment, no longer failing to match each
-# other's group just because "gE3" happened to OCR differently that day).
-# Covers every variant seen so far: IPS, gE / gE3 (and the "&"-for-E OCR
-# slip), bare G, G's - not guaranteed exhaustive against a variant that
-# hasn't shown up yet, but harmless to miss (falls back to the un-stripped
-# label, same as before this existed).
-_UNIT_SUFFIX_RE = re.compile(r"\s+(?:g[e&]?\d*'?s?|ips)$", re.IGNORECASE)
+# The physical location itself is always "{Mtr|Fan} {Shaft|End|...} {H|V|A}"
+# - Motor or Fan, which end, then a single-letter direction (Horizontal,
+# Vertical, Axial). Everything AFTER that direction letter is a unit
+# designator tacked on by the ATS software ("Mtr Shaft H IPS", "Fan Shaft H
+# gE3") - not part of the physical measurement point, and OCR-unstable in a
+# way the location words aren't (confirmed on real reports: the same real
+# sensor read "gE3" on one visit's scan and "g&3" on another's). Everything
+# BEFORE the "F"/"M" that starts "Fan"/"Mtr" is leftover cruft from the
+# capture above (there normally isn't any, but nothing guarantees that on
+# every OCR pass). This keeps only the part in between - "Mtr Shaft H",
+# "Fan End H" - which is both what's actually meaningful to a reviewer and
+# what add_escalation_signals used to (and no longer does, but a future
+# per-point comparison might) key off of, so trailing OCR noise there can't
+# quietly fragment "the same sensor" into what looks like two different
+# ones.
+#
+# Deliberately case-sensitive (no re.IGNORECASE) on the anchors - "Fan"/
+# "Mtr" and the direction letter are always capitalized on real reports,
+# and matching lowercase too caused a real false start in testing: "junk
+# before Fan End V" - re.search found the "f" inside "before" first and
+# ran with it. Case-sensitive anchors can't do that; the inner descriptive
+# word(s) (Shaft/End/Bearing/...) stay case-flexible since only the two
+# ends need to be trustworthy.
+_MEASUREMENT_POINT_CORE_RE = re.compile(r"[FM][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA]\b")
 
 
 def detect_measurement_point(ocr_text: str) -> str | None:
@@ -167,20 +174,27 @@ def detect_measurement_point(ocr_text: str) -> str | None:
     The same label is printed redundantly under all three panels
     (Spectrum, Waterfall, Trend) on every real report seen, so rather than
     trusting whichever match comes first, this takes the most common
-    string across all of them (after stripping the unit suffix - see
-    _UNIT_SUFFIX_RE - from each one first, so noise there doesn't split
-    votes for what's really the same location across repeats within one
-    image, not just across reports) - the same "let repetition outvote a
-    one-off OCR slip" idea _read_y_axis_ticks uses for tick labels, just
-    simpler since there's no numeric fitting involved here, only picking a
-    mode. Confirmed against 10 real reports spanning 6 distinct locations -
-    every one resolved correctly even when 1 of 4 repeats had a stray OCR
-    error (e.g. "Mir" for "Mtr").
+    string across all of them (after trimming each one down to its core
+    "{Fan|Mtr} ... {H|V|A}" span first - see _MEASUREMENT_POINT_CORE_RE -
+    so noise before/after that span doesn't split votes for what's really
+    the same location across repeats within one image, not just across
+    reports) - the same "let repetition outvote a one-off OCR slip" idea
+    _read_y_axis_ticks uses for tick labels, just simpler since there's no
+    numeric fitting involved here, only picking a mode. A raw match that
+    doesn't contain a recognizable "{Fan|Mtr} ... {H|V|A}" span at all
+    falls back to itself, stripped, rather than being dropped outright -
+    better to surface an unfamiliar label than silently lose the row.
+    Confirmed against 10 real reports spanning 6 distinct locations - every
+    one resolved correctly even when 1 of 4 repeats had a stray OCR error
+    (e.g. "Mir" for "Mtr").
     """
     from collections import Counter
 
     matches = [m.strip() for m in MEASUREMENT_POINT_RE.findall(ocr_text) if m.strip()]
-    cleaned = [_UNIT_SUFFIX_RE.sub("", m).strip() for m in matches]
+    cleaned = []
+    for m in matches:
+        core = _MEASUREMENT_POINT_CORE_RE.search(m)
+        cleaned.append(core.group(0).strip() if core else m)
     cleaned = [c for c in cleaned if c]
     if not cleaned:
         return None
