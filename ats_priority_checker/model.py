@@ -349,6 +349,19 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     number already reflects it, same as a fresh drop is. Don't
     reintroduce the restriction without checking back on that decision.
 
+    ONE narrow exception to that, added later, per a separate explicit
+    product decision - don't conflate it with the restriction above: when
+    the drop-to-2 override applies (see graph_recommended_priority above)
+    AND its number (2) matches stated, that specific row reads as a clean
+    agreement, not a lingering flag - `override_applied` below, detected
+    by escalation_priority_hint disagreeing with spectrum_priority_hint
+    (the only situation where that happens). This is narrower than the
+    reverted restriction: it does NOT apply to a caught-up threshold_jump,
+    and it does NOT apply to a plain amplitude_drop whose un-overridden
+    cur_hint happens to already match stated - only to the specific case
+    where the system itself talked the raw reading down to a considered 2
+    and that lands on what the analyst already said.
+
     Because "graph" can now mean two different kinds of evidence -
     spectrum_priority_hint plainly reading a different threshold bucket,
     vs. escalation_flag firing on a recent jump/drop even when the number
@@ -389,9 +402,23 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     # deliberately not, and in that case it's the more-informed number.
     graph = escalation_hint.where(escalation_hint.notna(), spectrum)
 
+    # The amplitude_drop-to-4-from-<=2 override (dataset.add_escalation_signals)
+    # is the ONE place escalation_priority_hint differs from that row's own
+    # spectrum_priority_hint - detectable here without a new column or
+    # string-matching escalation_reason, just by the two disagreeing.
+    override_applied = escalation_hint.notna() & spectrum.notna() & (escalation_hint != spectrum)
+
     out["graph_recommended_priority"] = graph
     graph_disagrees_on_number = graph.notna() & (graph != stated)
-    graph_disagrees = graph_disagrees_on_number | escalation_flag
+    # escalation_flag normally forces disagreement regardless of number
+    # match (a caught-up threshold_jump is still worth a look - see the
+    # docstring above) - EXCEPT the drop-to-2 override: once that's landed
+    # on a number that matches stated, per explicit product decision this
+    # reads as a clean agreement, not a lingering flag. If the override's
+    # number does NOT match stated, graph_disagrees_on_number already
+    # catches that independently, so this exception only ever suppresses
+    # the flag when there's genuinely nothing left to disagree about.
+    graph_disagrees = graph_disagrees_on_number | (escalation_flag & ~override_applied)
     graph_has_opinion = graph.notna() | escalation_flag
     out["graph_agrees_with_stated"] = pd.Series(
         np.where(~graph_has_opinion, pd.NA, ~graph_disagrees), index=flagged.index
