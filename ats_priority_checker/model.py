@@ -298,12 +298,23 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     priority:
       - text_recommended_priority / text_agrees_with_stated: predicted_priority,
         i.e. the Recommendations/Comments embedding model, on its own.
-      - spectrum_unit / spectrum_peak_amplitude / prior_date_tested: raw
-        context copied straight through from `flagged`, not a verdict of
-        their own - included so a reviewer can see what was actually read
-        off the chart (and which earlier report it was compared against)
+      - measurement_point / spectrum_unit / spectrum_peak_amplitude /
+        prior_date_tested: raw context copied straight through from
+        `flagged`, not a verdict of their own - included so a reviewer can
+        see what was actually read off the chart (which sensor location/
+        direction, and which earlier report it was compared against)
         without re-opening the PDF. Present only when that column exists
         on `flagged`, same as report_id/equipment_id/priority_raw above.
+        measurement_point is also worth scanning for a specific reason:
+        the SAME equipment_id can have several distinct measurement
+        points (e.g. "Mtr Shaft H IPS" vs "Fan Shaft H gE3"), each with
+        its own trend history and sometimes its own unit - if two rows
+        for one equipment_id show different measurement_point values,
+        prior_date_tested for either one is only meaningful against
+        reports sharing that same measurement_point, not the equipment's
+        history in general (see dataset.add_escalation_signals - it
+        currently groups by equipment_id alone, not equipment_id +
+        measurement_point).
       - graph_recommended_priority / graph_agrees_with_stated / graph_note:
         see below - this is NOT a blend of two different numbers.
       - any_disagreement / disagreement_source: True + "text"/"graph"/
@@ -386,9 +397,10 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     ).astype("boolean")
 
     # Raw context behind the graph columns below, not a verdict of its own -
-    # included so a reviewer can see WHAT was read off the chart (and when
-    # the prior comparison reading is from) without re-opening the PDF.
-    for col in ("spectrum_unit", "spectrum_peak_amplitude", "prior_date_tested"):
+    # included so a reviewer can see WHAT was read off the chart (which
+    # sensor location/direction, and when the prior comparison reading is
+    # from) without re-opening the PDF.
+    for col in ("measurement_point", "spectrum_unit", "spectrum_peak_amplitude", "prior_date_tested"):
         if col in flagged.columns:
             out[col] = flagged[col]
 

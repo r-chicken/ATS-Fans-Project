@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from .extract import DEFAULT_STYLE_THRESHOLD, classify_style_by_text, process_pdf
+from .graph_signals import detect_measurement_point
 
 REC_SEP = " | "
 
@@ -330,6 +331,9 @@ def recompute_dataset(out_dir: str | Path, filter_style: bool = True) -> dict:
     analysis (finishes in seconds regardless of how many reports you have):
       - style, from cached chart_ocr_text - use after changing
         classify_style_by_text()
+      - measurement_point, from cached chart_ocr_text - use after changing
+        graph_signals.detect_measurement_point() (older CSVs without this
+        column just get it filled in for the first time)
       - escalation_flag / escalation_reason / escalation_priority_hint /
         prior_* columns, from each row's already-cached
         spectrum_peak_amplitude + spectrum_unit + spectrum_priority_hint +
@@ -384,6 +388,9 @@ def recompute_dataset(out_dir: str | Path, filter_style: bool = True) -> dict:
     has_text = df["chart_ocr_text"].notna() & (df["chart_ocr_text"].astype(str).str.strip() != "")
     n_recomputable = int(has_text.sum())
     df.loc[has_text, "style"] = df.loc[has_text, "chart_ocr_text"].apply(classify_style_by_text)
+    if "measurement_point" not in df.columns:
+        df["measurement_point"] = None
+    df.loc[has_text, "measurement_point"] = df.loc[has_text, "chart_ocr_text"].apply(detect_measurement_point)
 
     summary = _split_and_write(df, out_dir, filter_style)
     summary["rows_recomputed_from_cached_ocr"] = n_recomputable

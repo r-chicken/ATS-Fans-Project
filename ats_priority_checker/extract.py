@@ -39,7 +39,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from .graph_signals import spectrum_priority_hint
+from .graph_signals import detect_measurement_point, spectrum_priority_hint
 
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
@@ -63,6 +63,7 @@ class ReportRecord:
     chart_colorfulness: float | None
     style: str  # "waterfall" | "colored_spectrum" | "unknown"
     spectrum_unit: str | None  # "in/s" | "g" | "gE" | "unknown" | None (no chart image)
+    measurement_point: str | None  # sensor location/direction label off the chart title, e.g. "Mtr Shaft H IPS" - see graph_signals.detect_measurement_point
     spectrum_peak_amplitude: float | None  # tallest real Spectrum peak, floored to the nearest y-axis label - see graph_signals.py
     spectrum_peak_amplitude_raw: float | None  # same reading before flooring, for debugging only
     spectrum_priority_hint: int | None  # supporting evidence only - see graph_signals.py
@@ -262,6 +263,7 @@ def process_pdf(
                 style = "unknown"
                 fields["parse_notes"] = (fields["parse_notes"] + "; no chart image found on page").strip("; ")
                 spectrum_unit = None
+                measurement_point = None
                 spectrum_peak_amplitude = None
                 spectrum_peak_amplitude_raw = None
                 spectrum_priority_hint_val = None
@@ -270,6 +272,7 @@ def process_pdf(
                 try:
                     ocr_text = ocr_image_text(chart_img)
                     style = classify_style_by_text(ocr_text)
+                    measurement_point = detect_measurement_point(ocr_text)
                     hint = spectrum_priority_hint(chart_img, ocr_text)
                     spectrum_unit = hint["spectrum_unit"]
                     spectrum_peak_amplitude = hint["spectrum_peak_amplitude"]
@@ -279,6 +282,7 @@ def process_pdf(
                 except Exception as exc:  # noqa: BLE001 - e.g. tesseract binary missing
                     style = "unknown"
                     spectrum_unit = None
+                    measurement_point = None
                     spectrum_peak_amplitude = None
                     spectrum_peak_amplitude_raw = None
                     spectrum_priority_hint_val = None
@@ -299,6 +303,7 @@ def process_pdf(
                     chart_colorfulness=score,
                     style=style,
                     spectrum_unit=spectrum_unit,
+                    measurement_point=measurement_point,
                     spectrum_peak_amplitude=spectrum_peak_amplitude,
                     spectrum_peak_amplitude_raw=spectrum_peak_amplitude_raw,
                     spectrum_priority_hint=spectrum_priority_hint_val,

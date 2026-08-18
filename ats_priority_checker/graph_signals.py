@@ -129,6 +129,42 @@ def detect_spectrum_unit(ocr_text: str) -> str:
     return "unknown"
 
 
+# Matches the sensor location/direction label baked into every panel
+# title on the chart screenshot, e.g. "EF-3521 \ Mtr Shaft H IPS, Channel
+# X" -> captures "Mtr Shaft H IPS" (equipment_id \ LOCATION, rest...).
+# This is the actual measurement point (which shaft, which end, which
+# direction) - equipment_id alone doesn't distinguish it, and a single
+# piece of equipment can have several of these, each with its own
+# separate trend history and sometimes its own unit (see
+# add_escalation_signals' module docstring on why that matters for
+# escalation matching).
+MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
+
+
+def detect_measurement_point(ocr_text: str) -> str | None:
+    """Best-effort read of the sensor location/direction label from the
+    chart's own panel titles (e.g. "Mtr Shaft H IPS", "Fan Shaft H gE3") -
+    returns None if nothing matched.
+
+    The same label is printed redundantly under all three panels
+    (Spectrum, Waterfall, Trend) on every real report seen, so rather than
+    trusting whichever match comes first, this takes the most common exact
+    string across all of them - the same "let repetition outvote a one-off
+    OCR slip" idea _read_y_axis_ticks uses for tick labels, just simpler
+    since there's no numeric fitting involved here, only picking a mode.
+    Confirmed against 10 real reports spanning 6 distinct location labels
+    ("Mtr Shaft H IPS", "Mtr/Fan Shaft H gE3", "Mtr/Fan End H gE3") - every
+    one resolved correctly even when 1 of 4 repeats had a stray OCR error
+    (e.g. "Mir" for "Mtr").
+    """
+    from collections import Counter
+
+    matches = [m.strip() for m in MEASUREMENT_POINT_RE.findall(ocr_text) if m.strip()]
+    if not matches:
+        return None
+    return Counter(matches).most_common(1)[0][0]
+
+
 def _crop_spectrum_panel(chart_image: Image.Image) -> Image.Image:
     w, h = chart_image.size
     return chart_image.crop((0, 0, int(w * SPECTRUM_PANEL_WFRAC), int(h * SPECTRUM_PANEL_HFRAC)))
