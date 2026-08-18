@@ -305,16 +305,20 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
         direction, and which earlier report it was compared against)
         without re-opening the PDF. Present only when that column exists
         on `flagged`, same as report_id/equipment_id/priority_raw above.
-        measurement_point is also worth scanning for a specific reason:
-        the SAME equipment_id can have several distinct measurement
-        points (e.g. "Mtr Shaft H IPS" vs "Fan Shaft H gE3"), each with
-        its own trend history and sometimes its own unit - if two rows
-        for one equipment_id show different measurement_point values,
-        prior_date_tested for either one is only meaningful against
-        reports sharing that same measurement_point, not the equipment's
-        history in general (see dataset.add_escalation_signals - it
-        currently groups by equipment_id alone, not equipment_id +
-        measurement_point).
+        measurement_point can legitimately differ from whatever produced
+        prior_spectrum_peak_amplitude/prior_date_tested - by design, not a
+        bug: dataset.add_escalation_signals compares against the nearest
+        earlier report for the same equipment_id REGARDLESS of
+        measurement_point (a single equipment_id doesn't always have a
+        same-measurement_point report to compare against - see that
+        function's docstring for the real report_003/report_033 case this
+        was confirmed against), so seeing measurement_point differ across
+        two adjacent rows here is expected. The one thing this DOES still
+        gate on the unit specifically: an amplitude_drop trigger only ever
+        fires when prior_spectrum_peak_amplitude is in the same unit as
+        spectrum_peak_amplitude (a raw ratio across units isn't a real
+        number) - a threshold_jump can and does fire across a unit change,
+        since it only ever compares the already-normalized 1-4 buckets.
       - graph_recommended_priority / graph_agrees_with_stated / graph_note:
         see below - this is NOT a blend of two different numbers.
       - any_disagreement / disagreement_source: True + "text"/"graph"/
