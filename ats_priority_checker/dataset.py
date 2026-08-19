@@ -40,22 +40,21 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
     answered by comparing dated reports for the same equipment_id directly,
     the same thing a human reviewer would do by eye.
 
-    Groups rows by (site, equipment_id) - measurement_point is deliberately
-    NOT part of the grouping key, despite an earlier version of this
-    function using (site, equipment_id, measurement_point) for one commit -
-    reverted, see below. Sorts by date_tested, and for each report walks
-    backward to the nearest EARLIER report in the same group that has a
-    usable amplitude reading - not just the literal previous row, since a
-    between-visit report that failed to parse or had no usable chart image
-    shouldn't break the comparison, and NOT restricted to a matching
-    spectrum_unit or measurement_point either (see below for why). Flags a
-    row when, versus that prior reading:
+    Groups rows by (site, equipment_id, measurement_point) - sorts by
+    date_tested, and for each report walks backward to the nearest EARLIER
+    report in the same group that has a usable amplitude reading - not
+    just the literal previous row, since a between-visit report that
+    failed to parse or had no usable chart image shouldn't break the
+    comparison. Not restricted to a matching spectrum_unit to accept a
+    prior at all (see below for why that's separate from the
+    measurement_point grouping). Flags a row when, versus that prior
+    reading:
       - its spectrum_priority_hint bucket is MORE severe (a lower number -
         see graph_signals.py) than the prior reading's - this comparison
         is unit-agnostic by construction (both hints are already the same
         1-4 scale regardless of which unit produced them), so it's safe
-        even when the current and prior readings are in different units
-        or from different measurement points, or
+        even when the current and prior readings happen to be in
+        different units, or
       - its spectrum_peak_amplitude has dropped to ESCALATION_DROP_RATIO or
         less of the prior reading's - a sudden, drastic drop is flagged for
         review same as a jump, not treated as improvement, since it can
@@ -66,29 +65,32 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
         different units (e.g. 0.95 gE vs 0.003 in/s) isn't a real number,
         so it's skipped rather than computed nonsensically.
 
-    On why measurement_point isn't part of the grouping (short version:
-    confirmed wrong on real data, twice, in opposite directions) - full
-    story worth reading before changing this again:
+    On measurement_point in the grouping key (this went back and forth
+    twice in the same conversation - read this before changing it again):
     graph_signals.detect_measurement_point reads a sensor location label
-    off the chart title (e.g. "Mtr Shaft H", "Fan End H") - useful
-    context (see model.priority_recommendation_table), but a single
-    equipment_id can have several of these, and which one a written
-    report happens to key off of varies visit to visit; there is not
-    always a same-measurement_point report to compare against. A version
-    of this function that required measurement_point to match before
-    accepting a prior was tried and reverted: on real data (report_003,
-    measurement_point "Mtr End H", vs. its true intended prior report_033,
-    "Fan End H" - same equipment_id, both gE, four months apart, nothing
-    else in between) it left report_003 with NO prior at all, even though
-    report_033 is exactly the report a human reviewer would compare it
-    against. The ORIGINAL bug this was trying to fix (report_011 vs.
-    report_013 - see the conversation this is from) never actually needed
-    per-measurement_point separation either - it needed the same fix
-    applied here: stop requiring a matching spectrum_unit to accept a
-    prior AT ALL, only to compute the amplitude ratio. Once that's fixed,
-    plain (site, equipment_id) correctly finds report_013 as report_011's
-    prior (same equipment, nearest earlier report, no unit requirement
-    blocking it) without needing measurement_point in the key either.
+    off the chart title (e.g. "Mtr Shaft H", "Fan End H") - a single
+    equipment_id can have several of these, and DIFFERENT measurement
+    points are genuinely different sensors with their own baseline
+    severity, their own independent fault progression, sometimes their own
+    unit - a "jump" between two different points' readings can reflect
+    nothing more than which point happened to get measured that visit, not
+    the equipment actually getting worse. An earlier version of this
+    function grouped by (site, equipment_id) only, reasoning that not
+    every equipment_id has a same-measurement_point report to compare
+    against (confirmed on real data: report_003, "Mtr End H", had no
+    same-point prior, only report_033, "Fan End H" - four months earlier,
+    same equipment, nothing else in between) - true, but explicitly
+    decided against once the domain issue was pointed out: report_033 is
+    a different sensor, and comparing report_003 against it isn't a
+    meaningful escalation signal even though it's the nearest available
+    report. measurement_point is back in the grouping key on that basis -
+    report_003 (and any other report in the same position) now correctly
+    gets NO prior rather than a cross-sensor comparison that looks
+    meaningful but isn't. The one thing that DIDN'T need to change back:
+    the same-unit requirement for accepting a prior at all (as opposed to
+    just for the amplitude-ratio check) - that was the actual, narrower
+    bug behind the ORIGINAL report_011/report_013 case, unrelated to
+    measurement_point, and stays fixed independent of this decision.
 
     Adds these columns (present but blank/NaN when there's no comparable
     prior reading, e.g. the equipment's first report in the set):
@@ -156,15 +158,21 @@ def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     parsed_dates = df["date_tested"].apply(_parse_report_date)
 
-    group_cols = [c for c in ("site", "equipment_id") if c in df.columns]
+    group_cols = [c for c in ("site", "equipment_id", "measurement_point") if c in df.columns]
     if not group_cols or parsed_dates.isna().all():
         return df
 
     # Iterate the grouper directly rather than via its .groups accessor -
     # .groups on a dropna=False groupby raises ValueError("Categorical
     # categories cannot be null") on some real pandas versions (confirmed
-    # on 2.1.4) the moment any group key is NaN (e.g. a report missing
-    # equipment_id). Direct iteration doesn't go through that codepath.
+    # on 2.1.4) the moment any group key is NaN - which measurement_point
+    # regularly will be (older cached rows, or a chart whose OCR failed).
+    # Direct iteration doesn't go through that codepath. Rows with a NaN
+    # measurement_point fall back to comparing as equal to each other
+    # within the same equipment_id (pandas groupby's default NaN-equals-
+    # NaN behavior) - imperfect (can lump together two genuinely different
+    # but both-unreadable measurement points), but no worse than this
+    # function's behavior before measurement_point existed at all.
     for _, sub_df in df.groupby(group_cols, dropna=False):
         idxs = sub_df.index
         ordered = parsed_dates.loc[list(idxs)].dropna().sort_values()

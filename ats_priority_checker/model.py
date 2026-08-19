@@ -305,20 +305,25 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
         direction, and which earlier report it was compared against)
         without re-opening the PDF. Present only when that column exists
         on `flagged`, same as report_id/equipment_id/priority_raw above.
-        measurement_point can legitimately differ from whatever produced
-        prior_spectrum_peak_amplitude/prior_date_tested - by design, not a
-        bug: dataset.add_escalation_signals compares against the nearest
-        earlier report for the same equipment_id REGARDLESS of
-        measurement_point (a single equipment_id doesn't always have a
-        same-measurement_point report to compare against - see that
-        function's docstring for the real report_003/report_033 case this
-        was confirmed against), so seeing measurement_point differ across
-        two adjacent rows here is expected. The one thing this DOES still
-        gate on the unit specifically: an amplitude_drop trigger only ever
-        fires when prior_spectrum_peak_amplitude is in the same unit as
-        spectrum_peak_amplitude (a raw ratio across units isn't a real
-        number) - a threshold_jump can and does fire across a unit change,
-        since it only ever compares the already-normalized 1-4 buckets.
+        measurement_point on this row always matches whatever produced
+        prior_spectrum_peak_amplitude/prior_date_tested when a prior
+        exists at all - dataset.add_escalation_signals groups by
+        (site, equipment_id, measurement_point), by explicit product
+        decision: two different measurement points are different sensors
+        with their own baseline severity, so comparing across them isn't a
+        meaningful escalation signal even on the rare equipment_id that
+        has no same-point prior to compare against (see that function's
+        docstring for the full reasoning, including the real report_003/
+        report_033 case that was weighed and explicitly decided against).
+        A prior_date_tested of NaN on a row that isn't this equipment's
+        first report at all can mean exactly that: no earlier report
+        shares this specific measurement_point, even if other measurement
+        points on the same equipment do have history. Separately, an
+        amplitude_drop trigger only ever fires when prior_spectrum_peak_
+        amplitude is in the same unit as spectrum_peak_amplitude (a raw
+        ratio across units isn't a real number) - a threshold_jump can and
+        does fire across a unit change, since it only ever compares the
+        already-normalized 1-4 buckets.
       - graph_recommended_priority / graph_agrees_with_stated / graph_note:
         see below - this is NOT a blend of two different numbers.
       - any_disagreement / disagreement_source: True + "text"/"graph"/
