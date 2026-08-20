@@ -1,0 +1,6 @@
+# The trained model bundle changes every time you retrain in Colab and
+# doesn't belong in git (binary, can be sizable, and git history isn't
+# the right place to track model versions) - copy fresh files in here
+# before each build instead. See README.md.
+model/*.joblib
+model/*.meta.json

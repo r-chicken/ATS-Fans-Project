@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ATS Vibration Priority Checker - Results</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Arial, sans-serif; margin: 40px; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    a.back { display: inline-block; margin-bottom: 20px; color: #1a56db; text-decoration: none; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; white-space: nowrap; }
+    th { background: #f3f4f6; position: sticky; top: 0; }
+    tr.flagged { background: #fff7e6; }
+    tr.flagged td:first-child { border-left: 3px solid #d97706; }
+    .wrap-col { white-space: normal; max-width: 320px; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">&larr; Analyze more PDFs</a>
+  <h1>Results</h1>
+  <p>Rows highlighted in amber have at least one disagreement between the stated priority and the text and/or Spectrum reading.</p>
+  <div style="overflow-x:auto">
+  <table>
+    <thead>
+      <tr>
+        {% for col in columns %}
+          <th>{{ col }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr class="{{ 'flagged' if row['_flagged'] else '' }}">
+          {% for col in columns %}
+            <td class="{{ 'wrap-col' if col in ('graph_note', 'parse_notes') else '' }}">{{ row[col] }}</td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</body>
+</html>

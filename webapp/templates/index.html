@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ATS Vibration Priority Checker</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Arial, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    p.sub { color: #555; margin-top: -8px; }
+    .dropzone { border: 2px dashed #999; border-radius: 8px; padding: 40px 20px; text-align: center; margin: 24px 0; }
+    .dropzone input { margin-top: 12px; }
+    button { background: #1a56db; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #1544ab; }
+    .error { background: #fde8e8; color: #9b1c1c; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>ATS Vibration Priority Checker</h1>
+  <p class="sub">Upload one or more vibration report PDFs to see whether the write-up and the Spectrum chart agree with the priority the report states.</p>
+
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+
+  <form action="/analyze" method="post" enctype="multipart/form-data">
+    <div class="dropzone">
+      <div>Select one or more report PDFs</div>
+      <input type="file" name="pdfs" accept="application/pdf" multiple required>
+    </div>
+    <button type="submit">Analyze</button>
+  </form>
+</body>
+</html>
