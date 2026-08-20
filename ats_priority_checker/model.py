@@ -103,6 +103,14 @@ def flag_mismatches(
       - the Spectrum peak-amplitude hint (see graph_signals.py) suggests a
         MORE urgent priority than stated.
 
+    Adds text_disagrees and spectrum_disagrees as their own boolean
+    columns (not just folded into flag_mismatch) - given vs. text-implied,
+    and given vs. spectrum-implied, each on its own, for scanning which
+    source(s) actually drove a flag without re-deriving the comparison by
+    hand. flag_mismatch itself is (text_disagrees | low-confidence-in-
+    stated | spectrum_disagrees) - see below on why spectrum_disagrees is
+    one-directional while text_disagrees isn't.
+
     The graph hint is allowed to flag on its own, even when the text
     agrees with the stated priority - the whole reason it exists is to
     catch cases the text can't: report writers sometimes under-state
@@ -166,6 +174,21 @@ def flag_mismatches(
         return hint.notna() & (hint < out["priority_num"])
 
     spectrum_disagrees = _disagrees("spectrum_priority_hint")
+
+    # Exposed as their own columns (not just folded into flag_mismatch)
+    # specifically so a caller can see WHICH source(s) drove a flag without
+    # re-deriving this logic by hand - text_disagrees is any-direction
+    # (predicted_priority != priority_num), spectrum_disagrees is
+    # one-direction only (hint < priority_num, i.e. MORE urgent - see the
+    # docstring above on why the other direction isn't a mismatch signal).
+    # Plain bool, not nullable - False both when the signal is present and
+    # agrees, and when spectrum_priority_hint itself is NaN (no chart
+    # reading available); that's consistent with how flag_mismatch already
+    # treats a missing signal (via _disagrees returning False for a
+    # missing column/NaN hint), just visible per-source here instead of
+    # only as the combined OR.
+    out["text_disagrees"] = text_disagrees
+    out["spectrum_disagrees"] = spectrum_disagrees
 
     out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees
 
