@@ -11,6 +11,31 @@ from .graph_signals import detect_measurement_point
 
 REC_SEP = " | "
 
+# Columns a removed feature used to write into dataset.csv. build_dataset
+# never produces these (they're not ReportRecord fields, and nothing adds
+# them post-hoc anymore either), so a fresh build is naturally clean - but
+# recompute_dataset reads an EXISTING dataset.csv off disk and only
+# updates the specific columns it knows how to re-derive (style,
+# measurement_point), leaving everything else exactly as found. Without
+# this, a dataset.csv built before a feature was removed would keep
+# showing that feature's stale columns (with stale values!) forever,
+# through every future recompute_dataset call, since nothing ever tells it
+# to drop them. Confirmed on real data: escalation_flag/escalation_reason/
+# escalation_priority_hint/prior_date_tested/prior_spectrum_peak_amplitude/
+# prior_spectrum_priority_hint/escalation_trigger kept showing up (with
+# real-looking but no-longer-produced values) well after
+# add_escalation_signals itself was deleted. Add to this list, don't just
+# delete the column-producing code, next time a column gets retired.
+_LEGACY_COLUMNS_TO_DROP = [
+    "prior_date_tested",
+    "prior_spectrum_peak_amplitude",
+    "prior_spectrum_priority_hint",
+    "escalation_flag",
+    "escalation_reason",
+    "escalation_trigger",
+    "escalation_priority_hint",
+]
+
 
 def _split_and_write(df: pd.DataFrame, out_dir: Path, filter_style: bool) -> dict:
     """Split the full extracted set into the three output CSVs and write
@@ -23,6 +48,7 @@ def _split_and_write(df: pd.DataFrame, out_dir: Path, filter_style: bool) -> dic
     # row below. Always force a real bool dtype before masking with it.
     df = df.copy()
     df["parse_ok"] = df["parse_ok"].astype(bool)
+    df = df.drop(columns=[c for c in _LEGACY_COLUMNS_TO_DROP if c in df.columns])
 
     if filter_style:
         usable = df[(df["style"] == "waterfall") & (df["parse_ok"])].copy()
