@@ -11,241 +11,6 @@ from .graph_signals import detect_measurement_point
 
 REC_SEP = " | "
 
-# A current-vs-previous-test amplitude ratio at or below this counts as
-# "much much lower" - a drop this steep is more often a broken/loosened
-# sensor, a since-fixed fault, or a missed read than routine improvement,
-# so it's worth a flagged second look either way. Not independently
-# derived from the labeled set - retune once you have enough labeled
-# examples of real sensor/mount issues vs. genuine improvement to check it
-# against.
-ESCALATION_DROP_RATIO = 0.25
-
-
-def _parse_report_date(date_str) -> pd.Timestamp | None:
-    if date_str is None or (isinstance(date_str, float) and pd.isna(date_str)) or str(date_str).strip() == "":
-        return None
-    try:
-        return pd.to_datetime(date_str)
-    except (ValueError, TypeError):
-        return None
-
-
-def add_escalation_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Compare each report's Spectrum peak reading against the SAME
-    equipment's most recent earlier dated report, and flag escalation.
-
-    Replaces the old Waterfall/Trend pixel-based escalation check - this
-    project's report set now spans a real timeline per machine (one report
-    per date, not a single snapshot), so "is this getting worse?" is
-    answered by comparing dated reports for the same equipment_id directly,
-    the same thing a human reviewer would do by eye.
-
-    Groups rows by (site, equipment_id, measurement_point) - sorts by
-    date_tested, and for each report walks backward to the nearest EARLIER
-    report in the same group that has a usable amplitude reading - not
-    just the literal previous row, since a between-visit report that
-    failed to parse or had no usable chart image shouldn't break the
-    comparison. Not restricted to a matching spectrum_unit to accept a
-    prior at all (see below for why that's separate from the
-    measurement_point grouping). Flags a row when, versus that prior
-    reading:
-      - its spectrum_priority_hint bucket is MORE severe (a lower number -
-        see graph_signals.py) than the prior reading's - this comparison
-        is unit-agnostic by construction (both hints are already the same
-        1-4 scale regardless of which unit produced them), so it's safe
-        even when the current and prior readings happen to be in
-        different units, or
-      - its spectrum_peak_amplitude has dropped to ESCALATION_DROP_RATIO or
-        less of the prior reading's - a sudden, drastic drop is flagged for
-        review same as a jump, not treated as improvement, since it can
-        mean a sensor came loose or a fault is intermittent rather than
-        gone (see ESCALATION_DROP_RATIO above). UNLIKE the threshold-jump
-        check, this one only fires when the prior reading is in the SAME
-        spectrum_unit as the current one - a raw amplitude ratio across
-        different units (e.g. 0.95 gE vs 0.003 in/s) isn't a real number,
-        so it's skipped rather than computed nonsensically.
-
-    On measurement_point in the grouping key (this went back and forth
-    twice in the same conversation - read this before changing it again):
-    graph_signals.detect_measurement_point reads a sensor location label
-    off the chart title (e.g. "Mtr Shaft H", "Fan End H") - a single
-    equipment_id can have several of these, and DIFFERENT measurement
-    points are genuinely different sensors with their own baseline
-    severity, their own independent fault progression, sometimes their own
-    unit - a "jump" between two different points' readings can reflect
-    nothing more than which point happened to get measured that visit, not
-    the equipment actually getting worse. An earlier version of this
-    function grouped by (site, equipment_id) only, reasoning that not
-    every equipment_id has a same-measurement_point report to compare
-    against (confirmed on real data: report_003, "Mtr End H", had no
-    same-point prior, only report_033, "Fan End H" - four months earlier,
-    same equipment, nothing else in between) - true, but explicitly
-    decided against once the domain issue was pointed out: report_033 is
-    a different sensor, and comparing report_003 against it isn't a
-    meaningful escalation signal even though it's the nearest available
-    report. measurement_point is back in the grouping key on that basis -
-    report_003 (and any other report in the same position) now correctly
-    gets NO prior rather than a cross-sensor comparison that looks
-    meaningful but isn't. The one thing that DIDN'T need to change back:
-    the same-unit requirement for accepting a prior at all (as opposed to
-    just for the amplitude-ratio check) - that was the actual, narrower
-    bug behind the ORIGINAL report_011/report_013 case, unrelated to
-    measurement_point, and stays fixed independent of this decision.
-
-    Adds these columns (present but blank/NaN when there's no comparable
-    prior reading, e.g. the equipment's first report in the set):
-      prior_date_tested, prior_spectrum_peak_amplitude,
-      prior_spectrum_priority_hint, escalation_flag, escalation_reason,
-      escalation_trigger, escalation_priority_hint (the more-severe of the
-      two hints, when flagged for a threshold jump; the current reading's
-      own hint when flagged for a sharp drop - EXCEPT one specific case,
-      see below)
-
-    escalation_trigger is a stable, parseable ("threshold_jump" and/or
-    "amplitude_drop", comma-joined) counterpart to escalation_reason's free
-    text - added specifically so callers can tell the two triggers apart
-    without string-matching escalation_reason. This distinction matters:
-    for a threshold_jump, escalation_priority_hint is always exactly this
-    row's own spectrum_priority_hint, so if the CURRENT report's stated
-    priority already reflects that jump (spectrum_priority_hint is no
-    longer more severe than what's stated now), there's nothing left to
-    flag - the analyst already caught it. amplitude_drop is different: the
-    drop itself is the concern regardless of whether the current reading's
-    number happens to match what's stated, since a low reading looks
-    completely ordinary on its own (see graph_signals.py - it has no way
-    to flag a drop by itself). A caller building its own "does the graph
-    agree with the stated priority" check should treat these two triggers
-    differently rather than collapsing both into one boolean - see
-    model.priority_recommendation_table for a worked example, and the bug
-    it was fixed to avoid (a threshold_jump the current report had already
-    caught up to was being flagged as if it were still an open
-    disagreement).
-
-    One amplitude_drop case gets a DIFFERENT number than "the current
-    reading's own hint": a drop landing on the least-severe bucket
-    (spectrum_priority_hint == 4) from equipment that was Priority 2 or
-    more urgent last time (prior_spectrum_priority_hint <= 2) sets
-    escalation_priority_hint to 2, not 4 - confirmed against two real
-    reports (report_003, report_232) where the analyst kept the STATED
-    priority at 2 despite a reading that read as a clean Priority 4, with
-    comments explicitly second-guessing the drop ("may not have been
-    loaded during collection", "related to the slower operating speed").
-    Handing back the raw cur_hint=4 in that situation recommends LESS
-    urgency than before on zero verification - exactly backwards for a
-    trigger whose own reason text says "verify sensor/mount before reading
-    this as improvement." Landing on a fixed 2 (not the prior reading's
-    own severity, which could have been a 1) is a deliberate middle
-    ground: treat it as worth a second look, not as either "trust the
-    drop" or "assume the worst." This does NOT apply to smaller drops that
-    land on 2 or 3, or to drops from equipment that was already a 3 or 4 -
-    only the specific "reads like everything's fine now, but wasn't
-    recently" pattern those two reports illustrate.
-
-    Future idea, not implemented here: also compare each peak's FREQUENCY
-    across dated reports for the same equipment, to catch a resonance
-    shifting frequency even when its amplitude doesn't move much. Would
-    need x-axis (frequency) calibration added to graph_signals.py, not
-    just the y-axis calibration read_spectrum_peak already does.
-    """
-    df = df.copy()
-    df["prior_date_tested"] = None
-    df["prior_spectrum_peak_amplitude"] = float("nan")
-    df["prior_spectrum_priority_hint"] = float("nan")
-    df["escalation_flag"] = False
-    df["escalation_reason"] = ""
-    df["escalation_trigger"] = ""
-    df["escalation_priority_hint"] = float("nan")
-
-    parsed_dates = df["date_tested"].apply(_parse_report_date)
-
-    group_cols = [c for c in ("site", "equipment_id", "measurement_point") if c in df.columns]
-    if not group_cols or parsed_dates.isna().all():
-        return df
-
-    # Iterate the grouper directly rather than via its .groups accessor -
-    # .groups on a dropna=False groupby raises ValueError("Categorical
-    # categories cannot be null") on some real pandas versions (confirmed
-    # on 2.1.4) the moment any group key is NaN - which measurement_point
-    # regularly will be (older cached rows, or a chart whose OCR failed).
-    # Direct iteration doesn't go through that codepath. Rows with a NaN
-    # measurement_point fall back to comparing as equal to each other
-    # within the same equipment_id (pandas groupby's default NaN-equals-
-    # NaN behavior) - imperfect (can lump together two genuinely different
-    # but both-unreadable measurement points), but no worse than this
-    # function's behavior before measurement_point existed at all.
-    for _, sub_df in df.groupby(group_cols, dropna=False):
-        idxs = sub_df.index
-        ordered = parsed_dates.loc[list(idxs)].dropna().sort_values()
-        history = []  # (idx, amplitude, unit, priority_hint) for rows seen so far, most recent last
-        for idx in ordered.index:
-            row = df.loc[idx]
-            cur_amp = row.get("spectrum_peak_amplitude")
-            cur_unit = row.get("spectrum_unit")
-            cur_hint = row.get("spectrum_priority_hint")
-
-            # Walk backward for the nearest earlier reading with a usable
-            # amplitude - NOT restricted to a matching spectrum_unit (see
-            # module docstring on why): the threshold-jump check below
-            # only ever compares unit-agnostic priority buckets, and the
-            # amplitude-ratio drop check separately re-checks the unit
-            # itself before using prev_amp, so nothing downstream needs
-            # this prior to already be same-unit.
-            prior = None
-            for prev_idx, prev_amp, prev_unit, prev_hint in reversed(history):
-                if pd.notna(prev_amp):
-                    prior = (prev_idx, prev_amp, prev_unit, prev_hint)
-                    break
-
-            if prior is not None:
-                prev_idx, prev_amp, prev_unit, prev_hint = prior
-                df.at[idx, "prior_date_tested"] = df.at[prev_idx, "date_tested"]
-                df.at[idx, "prior_spectrum_peak_amplitude"] = prev_amp
-                df.at[idx, "prior_spectrum_priority_hint"] = prev_hint
-
-                reasons = []
-                triggers = []
-                escalation_hint = None
-                if pd.notna(cur_hint) and pd.notna(prev_hint) and cur_hint < prev_hint:
-                    reasons.append(
-                        f"priority threshold jumped from {prev_hint:g} to {cur_hint:g} "
-                        f"vs. the {df.at[prev_idx, 'date_tested']} test"
-                    )
-                    triggers.append("threshold_jump")
-                    escalation_hint = cur_hint
-                # Ratio-based, so it needs an actual matching physical
-                # unit to mean anything - a threshold_jump above can (and
-                # does, on real reports) compare across units/measurement
-                # points since it's comparing already-normalized 1-4
-                # buckets, but 0.95 gE / 0.003 in/s is not a real ratio.
-                if prev_unit == cur_unit and pd.notna(cur_amp) and prev_amp > 0 and cur_amp <= prev_amp * ESCALATION_DROP_RATIO:
-                    drop_reason = (
-                        f"amplitude dropped sharply vs. the {df.at[prev_idx, 'date_tested']} test "
-                        f"({prev_amp:g} -> {cur_amp:g}) - verify sensor/mount before reading this as improvement"
-                    )
-                    triggers.append("amplitude_drop")
-                    if escalation_hint is None:
-                        # A drop straight to the least-severe bucket from
-                        # equipment that was Priority 2 or more urgent last
-                        # time doesn't get the raw (possibly unreliable)
-                        # cur_hint=4 - see the module docstring's
-                        # amplitude_drop section for why 2 specifically.
-                        if cur_hint == 4 and pd.notna(prev_hint) and prev_hint <= 2:
-                            escalation_hint = 2
-                            drop_reason += " - treating as Priority 2 pending verification, not the raw Priority 4 reading"
-                        else:
-                            escalation_hint = cur_hint
-                    reasons.append(drop_reason)
-                if reasons:
-                    df.at[idx, "escalation_flag"] = True
-                    df.at[idx, "escalation_reason"] = "; ".join(reasons)
-                    df.at[idx, "escalation_trigger"] = ", ".join(triggers)
-                    if escalation_hint is not None:
-                        df.at[idx, "escalation_priority_hint"] = escalation_hint
-
-            history.append((idx, cur_amp, cur_unit, cur_hint))
-
-    return df
-
 
 def _split_and_write(df: pd.DataFrame, out_dir: Path, filter_style: bool) -> dict:
     """Split the full extracted set into the three output CSVs and write
@@ -268,8 +33,6 @@ def _split_and_write(df: pd.DataFrame, out_dir: Path, filter_style: bool) -> dic
         excluded_style = df.iloc[0:0].copy()
         parse_errors = df[~df["parse_ok"]].copy()
 
-    usable = add_escalation_signals(usable)
-
     usable.to_csv(out_dir / "dataset.csv", index=False)
     excluded_style.to_csv(out_dir / "excluded_style.csv", index=False)
     parse_errors.to_csv(out_dir / "parse_errors.csv", index=False)
@@ -279,7 +42,6 @@ def _split_and_write(df: pd.DataFrame, out_dir: Path, filter_style: bool) -> dic
         "usable_rows": len(usable),
         "excluded_colored_spectrum_rows": len(excluded_style),
         "parse_error_rows": len(parse_errors),
-        "escalation_flagged_rows": int(usable["escalation_flag"].sum()) if "escalation_flag" in usable.columns else 0,
     }
     with open(out_dir / "summary.txt", "w") as f:
         for k, v in summary.items():
@@ -357,6 +119,7 @@ def build_dataset(
                     "chart_colorfulness": None,
                     "style": "unknown",
                     "spectrum_unit": None,
+                    "measurement_point": None,
                     "spectrum_peak_amplitude": None,
                     "spectrum_peak_amplitude_raw": None,
                     "spectrum_priority_hint": None,
@@ -381,9 +144,8 @@ def build_dataset(
 
 
 def recompute_dataset(out_dir: str | Path, filter_style: bool = True) -> dict:
-    """Re-derive `style` from the chart_ocr_text already cached in
-    out_dir's CSVs, re-derive the cross-report escalation signal from
-    already-cached Spectrum readings, and re-split/rewrite dataset.csv,
+    """Re-derive `style` and `measurement_point` from the chart_ocr_text
+    already cached in out_dir's CSVs, and re-split/rewrite dataset.csv,
     excluded_style.csv, and parse_errors.csv.
 
     What this CAN refresh without opening any PDFs or re-running OCR/pixel
@@ -393,11 +155,6 @@ def recompute_dataset(out_dir: str | Path, filter_style: bool = True) -> dict:
       - measurement_point, from cached chart_ocr_text - use after changing
         graph_signals.detect_measurement_point() (older CSVs without this
         column just get it filled in for the first time)
-      - escalation_flag / escalation_reason / escalation_priority_hint /
-        prior_* columns, from each row's already-cached
-        spectrum_peak_amplitude + spectrum_unit + spectrum_priority_hint +
-        date_tested - use after changing add_escalation_signals() or
-        ESCALATION_DROP_RATIO
 
     What this CANNOT refresh (needs a full build_dataset() re-run):
       - spectrum_peak_amplitude / spectrum_priority_hint themselves. Unlike

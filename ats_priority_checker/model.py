@@ -92,8 +92,7 @@ def flag_mismatches(
     low_confidence_threshold: float = 0.15,
 ) -> pd.DataFrame:
     """Compare stated priority to text-implied priority, and to the
-    Spectrum peak-amplitude and cross-report escalation graph signals
-    where available.
+    Spectrum peak-amplitude graph signal where available.
 
     Flags a row when:
       - the predicted (argmax) priority differs from the stated priority, OR
@@ -102,29 +101,33 @@ def flag_mismatches(
         as ambiguous / doesn't clearly support this priority" cases, not
         just clean disagreements), OR
       - the Spectrum peak-amplitude hint (see graph_signals.py) suggests a
-        MORE urgent priority than stated, OR
-      - the escalation hint (see dataset.add_escalation_signals) - this
-        equipment's reading jumped to a more severe priority bucket, or
-        dropped drastically, versus its own most recent earlier test -
-        suggests a MORE urgent priority than stated.
+        MORE urgent priority than stated.
 
-    Both graph hints are allowed to flag on their own, even when the text
-    agrees with the stated priority - the whole reason they exist is to
+    The graph hint is allowed to flag on its own, even when the text
+    agrees with the stated priority - the whole reason it exists is to
     catch cases the text can't: report writers sometimes under-state
     urgency for equipment that's been high-priority before, in which case
     the text itself may honestly match a priority that's actually too low.
 
-    Graph hints only flag in ONE direction: hint < stated (lower number =
-    more urgent). A hint suggesting LESS urgency than stated is not a
+    The graph hint only flags in ONE direction: hint < stated (lower number
+    = more urgent). A hint suggesting LESS urgency than stated is not a
     mismatch signal - it just means the graph alone doesn't capture
     whatever else supports the higher stated priority (comments, repair
-    history, other context), which is expected and not what these signals
-    exist to catch. Flagging both directions was tried and produced
+    history, other context), which is expected and not what this signal
+    exists to catch. Flagging both directions was tried and produced
     disagreements on ~9-14% of otherwise-correct reports with zero gain in
     real mismatch detection (see the conversation this fix is from for the
     concrete evidence) - real prioritization is holistic, so a raw
     threshold rule landing one level more cautious than the stated
     priority is normal and not evidence of an error.
+
+    A cross-report escalation signal (comparing against the same
+    equipment's prior dated test) used to be a second graph hint here -
+    tried and removed (see graph_signals.py's module docstring for why:
+    this report set has multiple measurement points per equipment, often
+    in different units, and there wasn't a reliably consistent per-machine
+    timeline to compare against). Don't reintroduce one without reading
+    that first.
 
     IMPORTANT - what "stated priority" means here: every comparison in this
     function is against priority_num (what the report itself says), NEVER
@@ -163,9 +166,8 @@ def flag_mismatches(
         return hint.notna() & (hint < out["priority_num"])
 
     spectrum_disagrees = _disagrees("spectrum_priority_hint")
-    escalation_disagrees = _disagrees("escalation_priority_hint")
 
-    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees | escalation_disagrees
+    out["flag_mismatch"] = text_disagrees | low_conf.fillna(False) | spectrum_disagrees
 
     def reason(r):
         parts = []
@@ -176,10 +178,6 @@ def flag_mismatches(
         spectrum_hint = r.get("spectrum_priority_hint")
         if pd.notna(spectrum_hint) and spectrum_hint < r["priority_num"]:
             parts.append(f"Spectrum peak reading suggests priority {spectrum_hint:g}, report states {r['priority_num']:g}")
-        escalation_hint = r.get("escalation_priority_hint")
-        if pd.notna(escalation_hint) and escalation_hint < r["priority_num"]:
-            escalation_why = r.get("escalation_reason", "escalating vs. this equipment's prior test")
-            parts.append(f"escalation ({escalation_why}) suggests priority {escalation_hint:g}, report states {r['priority_num']:g}")
         return "; ".join(parts)
 
     out["flag_reason"] = out.apply(reason, axis=1)
@@ -202,9 +200,9 @@ def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -
     a report can be written in the same mild, boilerplate language every
     other Priority 4 report uses while its own Spectrum chart reads far
     more severe than that language suggests - the text model has no way to
-    catch that, since it never sees the chart. Scoring
-    spectrum_priority_hint and escalation_priority_hint the same way
-    predicted_priority already gets scored surfaces exactly that gap.
+    catch that, since it never sees the chart. Scoring spectrum_priority_hint
+    the same way predicted_priority already gets scored surfaces exactly
+    that gap.
 
     Reports on, when present in df:
       - predicted_priority: the text-only model. Broadest coverage (every
@@ -213,13 +211,10 @@ def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -
         no report history needed, so it's available on nearly every report
         with a readable chart. This is the one that catches "the writeup
         reads mild but the chart doesn't" on a single report, standalone.
-      - escalation_priority_hint: cross-report signal - THIS report's
-        Spectrum peak compared against the SAME equipment's prior dated
-        test. Only populated when escalation_flag is True, so its n will
-        be much smaller than the other two - that's expected, not a bug:
-        most reports have nothing escalating to flag, and the first-ever
-        report for a piece of equipment never has a prior test to compare
-        against at all.
+
+    (A third, cross-report escalation signal - comparing against the same
+    equipment's prior dated test - used to be scored here too. Tried and
+    removed; see graph_signals.py's module docstring for why.)
 
     Each signal is scored ONLY on the rows where it isn't null - you can't
     score a hint that was never produced, and a signal's n here is itself
@@ -227,13 +222,13 @@ def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -
     how accurate it is when it does.
 
     Returns {signal_name: {"n": int, "report_text": str, "report_dict": dict}}
-    for whichever of the three columns are present in df; a report_dict
+    for whichever of the two columns are present in df; a report_dict
     entry is None if all class-metric arrays end up empty (currently only
     ever thrown by sklearn on genuinely undefined input, e.g. n=0).
     """
     from sklearn.metrics import classification_report
 
-    signal_cols = ["predicted_priority", "spectrum_priority_hint", "escalation_priority_hint"]
+    signal_cols = ["predicted_priority", "spectrum_priority_hint"]
     results = {}
     for col in signal_cols:
         if col not in df.columns:
@@ -253,11 +248,11 @@ def priority_signal_reports(df: pd.DataFrame, true_col: str = "true_priority") -
 def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> pd.DataFrame:
     """VALIDATION, not deployment - see module docstring, and
     priority_signal_reports's docstring above. Row-level companion to
-    priority_signal_reports: one row per report with predicted_priority,
-    spectrum_priority_hint, and escalation_priority_hint side by side, plus
-    a `*_correct` bool for each against true_col (your hand-corrected
-    ground truth, NOT priority_num) - for eyeballing exactly which signal
-    got which report right, not just the aggregate precision/recall.
+    priority_signal_reports: one row per report with predicted_priority and
+    spectrum_priority_hint side by side, plus a `*_correct` bool for each
+    against true_col (your hand-corrected ground truth, NOT priority_num) -
+    for eyeballing exactly which signal got which report right, not just
+    the aggregate precision/recall.
 
     flag_mismatch is deliberately NOT one of the columns here - it isn't a
     per-signal prediction, it's an OR of several signals compared against
@@ -268,18 +263,16 @@ def priority_signal_table(df: pd.DataFrame, true_col: str = "true_priority") -> 
     notebook's Section 5 already does this with precision_score/
     recall_score/confusion_matrix.
     """
-    signal_cols = [c for c in ("predicted_priority", "spectrum_priority_hint", "escalation_priority_hint") if c in df.columns]
+    signal_cols = [c for c in ("predicted_priority", "spectrum_priority_hint") if c in df.columns]
     id_cols = [c for c in ("report_id", "equipment_id", "priority_num", true_col) if c in df.columns]
     out = df[id_cols + signal_cols].copy()
     for col in signal_cols:
         # NaN (signal didn't fire) is "not applicable", not "wrong" - keep
         # it as a null rather than letting `NaN == true_col` silently read
-        # as False, which would make an escalation-didn't-fire row look
-        # identical to an escalation-fired-and-was-wrong row. Uses pandas'
-        # nullable "boolean" dtype specifically so this prints as
-        # True/False/<NA> - plain np.where here upcasts the whole column to
-        # float the moment a NaN is mixed in, so "correct" silently renders
-        # as 1.0/0.0 sitting right next to the priority-number columns,
+        # as False. Uses pandas' nullable "boolean" dtype specifically so
+        # this prints as True/False/<NA> - plain np.where here upcasts the
+        # whole column to float the moment a NaN is mixed in, so "correct"
+        # silently renders as 1.0/0.0 sitting right next to the priority-number columns,
         # which reads at a glance like a 4th priority decision instead of a
         # true/false flag.
         correct = pd.Series(np.where(out[col].isna(), pd.NA, out[col] == out[true_col]), index=out.index)
@@ -298,34 +291,16 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     priority:
       - text_recommended_priority / text_agrees_with_stated: predicted_priority,
         i.e. the Recommendations/Comments embedding model, on its own.
-      - measurement_point / spectrum_unit / spectrum_peak_amplitude /
-        prior_date_tested: raw context copied straight through from
-        `flagged`, not a verdict of their own - included so a reviewer can
-        see what was actually read off the chart (which sensor location/
-        direction, and which earlier report it was compared against)
-        without re-opening the PDF. Present only when that column exists
-        on `flagged`, same as report_id/equipment_id/priority_raw above.
-        measurement_point on this row always matches whatever produced
-        prior_spectrum_peak_amplitude/prior_date_tested when a prior
-        exists at all - dataset.add_escalation_signals groups by
-        (site, equipment_id, measurement_point), by explicit product
-        decision: two different measurement points are different sensors
-        with their own baseline severity, so comparing across them isn't a
-        meaningful escalation signal even on the rare equipment_id that
-        has no same-point prior to compare against (see that function's
-        docstring for the full reasoning, including the real report_003/
-        report_033 case that was weighed and explicitly decided against).
-        A prior_date_tested of NaN on a row that isn't this equipment's
-        first report at all can mean exactly that: no earlier report
-        shares this specific measurement_point, even if other measurement
-        points on the same equipment do have history. Separately, an
-        amplitude_drop trigger only ever fires when prior_spectrum_peak_
-        amplitude is in the same unit as spectrum_peak_amplitude (a raw
-        ratio across units isn't a real number) - a threshold_jump can and
-        does fire across a unit change, since it only ever compares the
-        already-normalized 1-4 buckets.
+      - measurement_point / spectrum_unit / spectrum_peak_amplitude: raw
+        context copied straight through from `flagged`, not a verdict of
+        their own - included so a reviewer can see what was actually read
+        off the chart (which sensor location/direction, which unit, what
+        the pixel-read peak was) without re-opening the PDF. Present only
+        when that column exists on `flagged`, same as report_id/
+        equipment_id/priority_raw above.
       - graph_recommended_priority / graph_agrees_with_stated / graph_note:
-        see below - this is NOT a blend of two different numbers.
+        spectrum_priority_hint, i.e. THIS report's own Spectrum peak
+        reading, on its own - not blended with anything else.
       - any_disagreement / disagreement_source: True + "text"/"graph"/
         "text, graph" when at least one source above doesn't agree with
         priority_num - the same condition flag_mismatch checks (modulo the
@@ -336,61 +311,20 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
 
     Works on any DataFrame shaped like flag_mismatches()'s output, not just
     a labeled/cross-validated subset - pass one row per report you have
-    text_recommended_priority (and ideally spectrum/escalation columns)
-    for, whether that's every labeled report or literally every report
-    you've ever extracted. See the notebook's "recommendation table for
-    every report" cell for how to get predicted_priority onto rows that
-    were never part of the labeled cross-validation set, using the final
-    fitted model instead of cross_validated_predictions.
+    text_recommended_priority (and ideally spectrum columns) for, whether
+    that's every labeled report or literally every report you've ever
+    extracted. See the notebook's "recommendation table for every report"
+    cell for how to get predicted_priority onto rows that were never part
+    of the labeled cross-validation set, using the final fitted model
+    instead of cross_validated_predictions.
 
-    On "influence from escalation" (raised in conversation - worth reading
-    if this function ever gets edited): escalation_priority_hint is USUALLY
-    the same NUMBER as that same row's own spectrum_priority_hint - see
-    dataset.add_escalation_signals, where escalation_hint is normally just
-    set to cur_hint - but not always: a severe amplitude_drop landing on
-    Priority 4 from equipment that was Priority 2-or-more-urgent last time
-    gets escalation_priority_hint=2 specifically, NOT the raw (possibly
-    unreliable) cur_hint=4 - see that function's docstring for two real
-    reports (report_003, report_232) this was confirmed against.
-    graph_recommended_priority therefore prefers escalation_priority_hint
-    over spectrum_priority_hint whenever escalation fired with an opinion,
-    falling back to the raw spectrum reading otherwise - NOT always exactly
-    spectrum_priority_hint the way it used to be.
-
-    escalation_flag (either trigger - dataset.py's escalation_trigger,
-    "threshold_jump" and/or "amplitude_drop") counts as its own
-    disagreement here, EVEN on a threshold_jump the current report's
-    stated priority already numerically matches. An earlier version of
-    this function restricted that to amplitude_drop only, treating a
-    caught-up threshold_jump as agreement since spectrum_priority_hint by
-    itself no longer contradicted priority_num - reverted per explicit
-    product decision: a recent significant change on this equipment is
-    worth a reviewer's attention regardless of whether this report's own
-    number already reflects it, same as a fresh drop is. Don't
-    reintroduce the restriction without checking back on that decision.
-
-    ONE narrow exception to that, added later, per a separate explicit
-    product decision - don't conflate it with the restriction above: when
-    the drop-to-2 override applies (see graph_recommended_priority above)
-    AND its number (2) matches stated, that specific row reads as a clean
-    agreement, not a lingering flag - `override_applied` below, detected
-    by escalation_priority_hint disagreeing with spectrum_priority_hint
-    (the only situation where that happens). This is narrower than the
-    reverted restriction: it does NOT apply to a caught-up threshold_jump,
-    and it does NOT apply to a plain amplitude_drop whose un-overridden
-    cur_hint happens to already match stated - only to the specific case
-    where the system itself talked the raw reading down to a considered 2
-    and that lands on what the analyst already said.
-
-    Because "graph" can now mean two different kinds of evidence -
-    spectrum_priority_hint plainly reading a different threshold bucket,
-    vs. escalation_flag firing on a recent jump/drop even when the number
-    matches - disagreement_source annotates which one(s) actually apply
-    on that row, e.g. "graph (spectrum)", "graph (severe amplitude change
-    from previous scan)", or "graph (spectrum, severe amplitude change
-    from previous scan)" when both do. Read the annotation, not just the
-    bare word "graph", before deciding a row needs a second look for the
-    reason you expect.
+    This used to also fold in a cross-report escalation signal (a second
+    "graph" source, comparing against the same equipment's prior dated
+    test, sometimes overriding the raw spectrum reading, sometimes forcing
+    disagreement even when the numbers matched) - tried, iterated on
+    heavily, and removed; see graph_signals.py's module docstring for why.
+    graph_recommended_priority is exactly spectrum_priority_hint again, no
+    exceptions, no override.
     """
     out = pd.DataFrame(index=flagged.index)
     for col in ("report_id", "equipment_id", "priority_raw"):
@@ -406,76 +340,38 @@ def priority_recommendation_table(flagged: pd.DataFrame) -> pd.DataFrame:
     ).astype("boolean")
 
     # Raw context behind the graph columns below, not a verdict of its own -
-    # included so a reviewer can see WHAT was read off the chart (which
-    # sensor location/direction, and when the prior comparison reading is
-    # from) without re-opening the PDF.
-    for col in ("measurement_point", "spectrum_unit", "spectrum_peak_amplitude", "prior_date_tested"):
+    # included so a reviewer can see WHAT was read off the chart without
+    # re-opening the PDF.
+    for col in ("measurement_point", "spectrum_unit", "spectrum_peak_amplitude"):
         if col in flagged.columns:
             out[col] = flagged[col]
 
     spectrum = flagged.get("spectrum_priority_hint", pd.Series(np.nan, index=flagged.index))
-    escalation_hint = flagged.get("escalation_priority_hint", pd.Series(np.nan, index=flagged.index))
-    escalation_flag = flagged.get("escalation_flag", pd.Series(False, index=flagged.index)).fillna(False)
-    escalation_reason = flagged.get("escalation_reason", pd.Series("", index=flagged.index)).fillna("")
 
-    # Prefer escalation_priority_hint (see docstring above) - it's the same
-    # number as spectrum_priority_hint except in the one case where it's
-    # deliberately not, and in that case it's the more-informed number.
-    graph = escalation_hint.where(escalation_hint.notna(), spectrum)
-
-    # The amplitude_drop-to-4-from-<=2 override (dataset.add_escalation_signals)
-    # is the ONE place escalation_priority_hint differs from that row's own
-    # spectrum_priority_hint - detectable here without a new column or
-    # string-matching escalation_reason, just by the two disagreeing.
-    override_applied = escalation_hint.notna() & spectrum.notna() & (escalation_hint != spectrum)
-
-    out["graph_recommended_priority"] = graph
-    graph_disagrees_on_number = graph.notna() & (graph != stated)
-    # escalation_flag normally forces disagreement regardless of number
-    # match (a caught-up threshold_jump is still worth a look - see the
-    # docstring above) - EXCEPT the drop-to-2 override: once that's landed
-    # on a number that matches stated, per explicit product decision this
-    # reads as a clean agreement, not a lingering flag. If the override's
-    # number does NOT match stated, graph_disagrees_on_number already
-    # catches that independently, so this exception only ever suppresses
-    # the flag when there's genuinely nothing left to disagree about.
-    graph_disagrees = graph_disagrees_on_number | (escalation_flag & ~override_applied)
-    graph_has_opinion = graph.notna() | escalation_flag
+    out["graph_recommended_priority"] = spectrum
+    graph_disagrees = spectrum.notna() & (spectrum != stated)
     out["graph_agrees_with_stated"] = pd.Series(
-        np.where(~graph_has_opinion, pd.NA, ~graph_disagrees), index=flagged.index
+        np.where(~spectrum.notna(), pd.NA, ~graph_disagrees), index=flagged.index
     ).astype("boolean")
 
-    def _graph_note(g_val, g_dis, esc_flag, esc_reason, stated_val):
-        parts = []
-        if g_dis:
-            parts.append(f"Spectrum reads priority {g_val:g} vs. stated {stated_val:g}")
-        if esc_flag:
-            parts.append(f"escalation: {esc_reason}")
-        return "; ".join(parts)
-
     out["graph_note"] = [
-        _graph_note(g, gd, ef, er, st)
-        for g, gd, ef, er, st in zip(graph, graph_disagrees_on_number, escalation_flag, escalation_reason, stated)
+        f"Spectrum reads priority {g:g} vs. stated {st:g}" if gd else ""
+        for g, gd, st in zip(spectrum, graph_disagrees, stated)
     ]
 
     out["any_disagreement"] = text_agrees.eq(False) | graph_disagrees
 
-    def _source(text_dis, g_dis, esc_flag):
+    def _source(text_dis, g_dis):
         parts = []
         if text_dis:
             parts.append("text")
-        if g_dis or esc_flag:
-            graph_reasons = []
-            if g_dis:
-                graph_reasons.append("spectrum")
-            if esc_flag:
-                graph_reasons.append("severe amplitude change from previous scan")
-            parts.append(f"graph ({', '.join(graph_reasons)})")
+        if g_dis:
+            parts.append("graph (spectrum)")
         return ", ".join(parts)
 
     out["disagreement_source"] = [
-        _source(not ta, gd, ef)
-        for ta, gd, ef in zip(text_agrees.fillna(True), graph_disagrees_on_number, escalation_flag)
+        _source(not ta, gd)
+        for ta, gd in zip(text_agrees.fillna(True), graph_disagrees)
     ]
 
     return out

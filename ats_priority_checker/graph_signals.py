@@ -5,8 +5,8 @@ text already used for style detection in extract.py.
 Per the domain guidance behind this module: this is not a standalone
 verdict. Report writers sometimes under-state urgency for equipment that's
 been high-priority before, so this exists to catch that - but it's
-supporting evidence to combine with the text-based prediction and with the
-cross-report escalation signal (dataset.py), not a replacement for either.
+supporting evidence to combine with the text-based prediction, not a
+replacement for it.
 
 Status / history:
 - v1 (Fund Amp text field): read the printed "Fund Amp: X" line next to the
@@ -31,21 +31,35 @@ Status / history:
   labeled set, so if you have Spectrum peak readings that look visibly
   wrong once you run this against your real data, that's the first place
   to retune (see the constants just below the imports).
-- Waterfall/Trend charts: intentionally not read anymore. The current
-  project scope has one report per machine per date, spanning a real
-  timeline, so escalation vs. the equipment's own recent history is now
-  detected by comparing dated reports for the same equipment_id (see
-  dataset.py's escalation signal) instead of pixel-reading the Waterfall
-  or Trend panels. Do not re-add Waterfall/Trend pixel analysis without
-  re-reading that discussion - the old Trend pixel heuristic here topped
-  out around a 75% ceiling across five different techniques even for a
-  narrower "is it escalating at all" question, well short of what precise
-  point-reading would need.
+- Waterfall/Trend charts: intentionally not read. The old Trend pixel
+  heuristic here topped out around a 75% ceiling across five different
+  techniques even for a narrower "is it escalating at all" question, well
+  short of what precise point-reading would need - don't re-add
+  Waterfall/Trend pixel analysis without re-reading that discussion.
+- Cross-report escalation (comparing a reading against the same
+  equipment's own prior dated test): tried (dataset.py's
+  add_escalation_signals) and removed. This report set has multiple
+  distinct measurement points per equipment_id (see
+  detect_measurement_point below), often in different units, and not
+  every equipment_id has a same-point history to compare against at all -
+  after several rounds of trying to patch the grouping logic (by
+  equipment_id alone, then equipment_id + measurement_point, relaxing the
+  same-unit requirement, etc. - see the conversation this is from), the
+  conclusion was that there isn't a reliably consistent per-machine
+  timeline to compare against in this data, not just a bug to fix. There
+  is currently NO cross-report/historical signal in this project - each
+  report is judged only on its own text and its own chart reading. Don't
+  re-add a cross-report escalation signal without a concrete plan for
+  what makes two readings comparable (same equipment AND same
+  measurement point AND same unit, at minimum) and how thin that leaves
+  the usable data.
 - Future idea (not implemented): compare the FREQUENCIES of each report's
   peaks across dated reports for the same equipment, to catch a resonance
   shifting frequency even when its amplitude doesn't change much. Would
   need each peak's x-axis (frequency) calibration too, not just y-axis -
-  same OCR+RANSAC approach as below would likely extend to it.
+  same OCR+RANSAC approach as below would likely extend to it. Would
+  inherit the same "what's actually comparable across reports" problem
+  escalation ran into, so worth reading that entry first.
 """
 from __future__ import annotations
 
@@ -135,9 +149,10 @@ def detect_spectrum_unit(ocr_text: str) -> str:
 # This is the actual measurement point (which shaft, which end, which
 # direction) - equipment_id alone doesn't distinguish it, and a single
 # piece of equipment can have several of these, each with its own
-# separate trend history and sometimes its own unit (see
-# add_escalation_signals' module docstring on why that matters for
-# escalation matching).
+# separate trend history and sometimes its own unit. Useful context on its
+# own (see model.priority_recommendation_table) - this is also exactly why
+# a cross-report escalation signal was tried and removed (see the module
+# docstring's history section) rather than a reason to bring one back.
 MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 
 # The physical location itself is always "{Mtr|Fan} {Shaft|End|...} {H|V|A}"
@@ -150,11 +165,9 @@ MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 # BEFORE the "F"/"M" that starts "Fan"/"Mtr" is leftover cruft from the
 # capture above (there normally isn't any, but nothing guarantees that on
 # every OCR pass). This keeps only the part in between - "Mtr Shaft H",
-# "Fan End H" - which is both what's actually meaningful to a reviewer and
-# what add_escalation_signals used to (and no longer does, but a future
-# per-point comparison might) key off of, so trailing OCR noise there can't
-# quietly fragment "the same sensor" into what looks like two different
-# ones.
+# "Fan End H" - which is what's actually meaningful to a reviewer, so
+# trailing OCR noise there can't quietly make "the same sensor" look like
+# two different ones on the page.
 #
 # Deliberately case-sensitive (no re.IGNORECASE) on the anchors - "Fan"/
 # "Mtr" and the direction letter are always capitalized on real reports,
