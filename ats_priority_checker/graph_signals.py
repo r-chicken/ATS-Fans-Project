@@ -181,8 +181,12 @@ _MEASUREMENT_POINT_CORE_RE = re.compile(r"[FM][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA](?
 # "Mtr" -> "Mir" often enough that a single image's OCR pass can plausibly
 # get MORE than half its repeats wrong, not just the occasional one-off a
 # majority vote shrugs off. Applied before the core-trim above so a
-# corrected "Mtr" still matches the [FM] anchor.
-_KNOWN_OCR_FIXES = [(re.compile(r"\bMir\b"), "Mtr")]
+# corrected "Mtr" still matches the [FM] anchor. "Mitr" (extra "i") is the
+# same underlying misread in the other direction - same fix, same reason.
+_KNOWN_OCR_FIXES = [
+    (re.compile(r"\bMir\b"), "Mtr"),
+    (re.compile(r"\bMitr\b"), "Mtr"),
+]
 
 
 def detect_measurement_point(ocr_text: str) -> str | None:
