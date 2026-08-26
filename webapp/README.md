@@ -146,9 +146,41 @@ your work account first.
 
    For example, if your Login server is `atspriority1234.azurecr.io`,
    that first line should end up looking like
-   `docker login atspriority1234.azurecr.io -u atspriority1234 -p <the password you copied>`
+   `docker login atspriority1234.azurecr.io -u atspriority1234 -p (the password you copied, pasted in as-is)`
    - a plain word right after `-u`/`-p`/`login`, no angle brackets
    anywhere.
+
+   **If `docker build` fails with something like "failed to connect to
+   the docker API" / "virtualization support not detected":** Docker
+   Desktop needs your machine's virtualization feature turned on to run
+   at all, and on a company-managed laptop that's usually locked down by
+   IT policy - not something you can fix yourself without admin rights.
+   Skip local Docker entirely and use **Azure Cloud Shell** instead,
+   which builds the image on Azure's servers, not your laptop:
+
+   1. In the Portal, click the **`>_`** icon in the top toolbar to open
+      Cloud Shell -> choose **Bash** (first time, accept the default
+      storage it offers to create).
+   2. On your computer, zip up your whole project folder (the one that
+      already has `webapp/model/priority_classifier.joblib` and
+      `.meta.json` in it).
+   3. In Cloud Shell, click the **Upload/download files** icon and
+      upload that zip.
+   4. Then run:
+      ```bash
+      unzip YOUR_ZIP_NAME.zip -d ats-project
+      cd ats-project
+      az acr build --registry YOUR_REGISTRY_NAME --image ats-priority-checker:latest --file webapp/Dockerfile .
+      ```
+      (`YOUR_REGISTRY_NAME` is just the name part, e.g. `atspriority1234`
+      - not the full `.azurecr.io` login server. If the unzip created a
+      nested folder, `cd` into that instead.) Cloud Shell is already
+      signed into your Azure account, so there's no login step, and this
+      one command replaces `docker login`/`build`/`push` entirely -
+      nothing runs on your laptop.
+
+   Either way you get here, the image ends up in the same place - continue
+   to step 4 below once it's pushed.
 
 4. **App Service plan.** Search "App Service plans" -> **+ Create**.
    Resource group = the same one. Name it (e.g.
