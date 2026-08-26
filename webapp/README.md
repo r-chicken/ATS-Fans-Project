@@ -132,13 +132,23 @@ your work account first.
    and a **Password** - copy all three somewhere, you need them next.
 
 3. **Build and push the image**, from the repo root, using the Login
-   server/Username/Password from step 2 (replace the placeholders):
+   server/Username/Password from step 2. Copy these three commands, then
+   in your own copy **replace the whole word** `YOUR_LOGIN_SERVER` (etc.)
+   with the real value - don't leave any `<` or `>` characters in there,
+   those aren't part of the placeholder, and your terminal will read them
+   as "redirect this to/from a file" and error out:
 
    ```bash
-   docker login <login-server> -u <username> -p <password>
-   docker build -t <login-server>/ats-priority-checker:latest -f webapp/Dockerfile .
-   docker push <login-server>/ats-priority-checker:latest
+   docker login YOUR_LOGIN_SERVER -u YOUR_USERNAME -p YOUR_PASSWORD
+   docker build -t YOUR_LOGIN_SERVER/ats-priority-checker:latest -f webapp/Dockerfile .
+   docker push YOUR_LOGIN_SERVER/ats-priority-checker:latest
    ```
+
+   For example, if your Login server is `atspriority1234.azurecr.io`,
+   that first line should end up looking like
+   `docker login atspriority1234.azurecr.io -u atspriority1234 -p <the password you copied>`
+   - a plain word right after `-u`/`-p`/`login`, no angle brackets
+   anywhere.
 
 4. **App Service plan.** Search "App Service plans" -> **+ Create**.
    Resource group = the same one. Name it (e.g.
@@ -178,9 +188,12 @@ the fresh model files into `webapp/model/` (step 1 above), then rebuild
 and push:
 
 ```bash
-docker build -t <image-tag-you-used-before> -f webapp/Dockerfile .
-docker push <image-tag-you-used-before>
+docker build -t YOUR_LOGIN_SERVER/ats-priority-checker:latest -f webapp/Dockerfile .
+docker push YOUR_LOGIN_SERVER/ats-priority-checker:latest
 ```
+
+(Same `YOUR_LOGIN_SERVER` as step 3 above - whatever you used there, e.g.
+`atspriority1234.azurecr.io`. No angle brackets.)
 
 Then tell the Web App to pick up the new image - **CLI**:
 `az webapp restart --resource-group $RESOURCE_GROUP --name $APP_NAME` -
