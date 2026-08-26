@@ -52,6 +52,13 @@ python app.py   # http://localhost:8000
 
 ## 3. Deploy to Azure App Service
 
+Two ways to do this - same end result, pick whichever fits what you have
+installed. **If you don't have (or can't install) the Azure CLI - e.g.
+no admin rights on this machine - use Option B.** It needs nothing beyond
+Docker Desktop (already installed) and a browser.
+
+### Option A: Azure CLI
+
 These are the standard steps for "custom container on Azure App Service"
 - adjust names/region for your organization's conventions. Run from the
 repo root.
@@ -101,22 +108,89 @@ Give it a couple of minutes to start (first boot pulls the image), then
 open `https://$APP_NAME.azurewebsites.net` - print `$APP_NAME` if you
 didn't note it down (`echo $APP_NAME`).
 
+### Option B: Azure Portal (no CLI, no admin-requiring installs)
+
+Everything below happens at **portal.azure.com** in your browser, plus
+`docker build`/`docker push`/`docker login` in your terminal (Docker
+Desktop, already installed - not Azure CLI). Sign into the Portal with
+your work account first.
+
+1. **Resource group.** Search "Resource groups" in the top search bar ->
+   **+ Create**. Pick your Subscription, name it (e.g.
+   `ats-priority-checker-rg`), pick a Region -> **Review + create** ->
+   **Create**.
+
+2. **Container registry.** Search "Container registries" -> **+ Create**.
+   Resource group = the one you just made. Registry name = something
+   globally unique, lowercase/numbers only (e.g. `atspriority1234`) -
+   this becomes part of a URL, so the Portal will tell you immediately if
+   it's taken. SKU = Basic -> **Review + create** -> **Create**.
+
+   Once it's created, open it, go to **Settings -> Access keys** in the
+   left menu, and toggle **Admin user** to Enabled. This page now shows a
+   **Login server** (e.g. `atspriority1234.azurecr.io`), a **Username**,
+   and a **Password** - copy all three somewhere, you need them next.
+
+3. **Build and push the image**, from the repo root, using the Login
+   server/Username/Password from step 2 (replace the placeholders):
+
+   ```bash
+   docker login <login-server> -u <username> -p <password>
+   docker build -t <login-server>/ats-priority-checker:latest -f webapp/Dockerfile .
+   docker push <login-server>/ats-priority-checker:latest
+   ```
+
+4. **App Service plan.** Search "App Service plans" -> **+ Create**.
+   Resource group = the same one. Name it (e.g.
+   `ats-priority-checker-plan`). Operating System = **Linux**. Region =
+   same as before. Under Pricing plan, click **Explore pricing plans** (or
+   "Change size") and pick **B1** (the free/F1 tier doesn't have enough
+   memory for the embedding model and will fail to start) -> **Review +
+   create** -> **Create**.
+
+5. **The web app itself.** Search "App Services" -> **+ Create -> Web
+   App**. Resource group = the same one. Name it - this becomes your URL
+   (`<name>.azurewebsites.net`), so it needs to be globally unique too.
+   **Publish = Container.** Operating System = Linux. Region = same as
+   before. App Service Plan = the one from step 4.
+
+   Move to the **Container** (or **Docker**) tab: Image Source = **Azure
+   Container Registry**, then pick your registry, image
+   (`ats-priority-checker`), and tag (`latest`) from the dropdowns - since
+   you're signed into the same Azure account, this handles the
+   registry credentials for you automatically, no separate
+   username/password entry needed here.
+
+   -> **Review + create** -> **Create**.
+
+6. **Set the port.** Open the new Web App -> **Settings -> Configuration**
+   in the left menu -> **Application settings** tab -> **+ New
+   application setting**. Name = `WEBSITES_PORT`, Value = `80` -> **OK**
+   -> **Save** at the top -> confirm.
+
+Give it a couple of minutes to start (first boot pulls the image), then
+open `https://<your-app-name>.azurewebsites.net`.
+
 ## 4. Updating later (new model, or code changes)
 
-Whenever you retrain in Colab, or pull code updates into this repo:
+Whenever you retrain in Colab, or pull code updates into this repo, copy
+the fresh model files into `webapp/model/` (step 1 above), then rebuild
+and push:
 
 ```bash
-# 1. Copy the fresh model files into webapp/model/ (step 1 above), then:
-docker build -t $ACR_NAME.azurecr.io/ats-priority-checker:latest -f webapp/Dockerfile .
-docker push $ACR_NAME.azurecr.io/ats-priority-checker:latest
-
-# 2. Tell App Service to pick up the new image
-az webapp restart --resource-group $RESOURCE_GROUP --name $APP_NAME
+docker build -t <image-tag-you-used-before> -f webapp/Dockerfile .
+docker push <image-tag-you-used-before>
 ```
 
-($ACR_NAME/$RESOURCE_GROUP/$APP_NAME are the same values from step 3 -
-worth saving those somewhere rather than regenerating the random
-suffixes, since they identify the actual resources you created.)
+Then tell the Web App to pick up the new image - **CLI**:
+`az webapp restart --resource-group $RESOURCE_GROUP --name $APP_NAME` -
+or **Portal**: open the Web App -> **Overview** -> **Restart** button at
+the top.
+
+(Optional, for either path: on the Web App's **Deployment Center** page
+you can turn on **Continuous Deployment**, so pushing a new `:latest`
+image to the registry auto-redeploys without needing that manual
+restart step at all.)
 
 ## What this app does and doesn't do
 
