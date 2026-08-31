@@ -90,6 +90,13 @@ def _score_pdfs(paths: list[Path]) -> pd.DataFrame:
     usable["predicted_priority"] = state["clf"].predict(embeddings)
 
     table = priority_recommendation_table(usable)
+    # priority_recommendation_table doesn't carry this through on its own
+    # (it's a verdict table, not a debug dump), but it's the only place
+    # that explains a blank spectrum reading (no chart image found on the
+    # page vs. OCR failing vs. genuinely nothing to report), so it's
+    # worth showing here.
+    if "parse_notes" in usable.columns:
+        table["parse_notes"] = usable["parse_notes"]
     # Carry through parse_notes for any pages that failed to parse a
     # priority at all, so the upload result still explains every page,
     # not just the ones that scored successfully.

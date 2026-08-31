@@ -95,6 +95,13 @@ def _score_pdfs(paths: list[Path]) -> pd.DataFrame:
     usable["predicted_priority"] = state["clf"].predict(embeddings)
 
     table = priority_recommendation_table(usable)
+    # priority_recommendation_table doesn't carry this through on its own
+    # (see its docstring - it's a verdict table, not a debug dump), but
+    # it's the only place that explains a blank spectrum reading (no
+    # chart image found on the page vs. OCR failing vs. genuinely nothing
+    # to report), so it's worth showing here.
+    if "parse_notes" in usable.columns:
+        table["parse_notes"] = usable["parse_notes"]
     unusable = df[df["priority_num"].isna()][["report_id"]].copy()
     if not unusable.empty:
         unusable["parse_notes"] = df.loc[unusable.index, "parse_notes"] if "parse_notes" in df.columns else "no priority found on this page"
