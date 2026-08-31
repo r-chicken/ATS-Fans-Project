@@ -213,6 +213,54 @@ your work account first.
 Give it a couple of minutes to start (first boot pulls the image), then
 open `https://<your-app-name>.azurewebsites.net`.
 
+### Option C: GitHub Actions (no local Docker, no Azure CLI, no admin needed)
+
+Use this if both A and B are blocked for you - e.g. Docker Desktop won't
+start because virtualization is disabled by IT policy, *and* `az acr
+build` fails with `TasksOperationsNotAllowed` (some organizations disable
+ACR Tasks tenant-wide). This builds the image on GitHub's own servers
+instead, using a workflow already included in this repo at
+`.github/workflows/build-and-push-webapp.yml` - nothing runs on your
+laptop or in your Azure subscription's build tooling at all.
+
+1. **Regenerate your registry password first**, if it's ever been shared
+   anywhere it shouldn't (pasted in chat, etc.) - you're about to store
+   it as a GitHub secret, so start from a fresh one. Portal -> your
+   registry -> **Settings -> Access keys** -> the regenerate button next
+   to a password.
+
+2. **Add three repository secrets.** In your GitHub repo:
+   **Settings -> Secrets and variables -> Actions -> New repository
+   secret**, and add each of these (name exactly as shown, value from
+   your registry's Access keys page):
+   - `ACR_LOGIN_SERVER` - e.g. `atspriority1234.azurecr.io`
+   - `ACR_USERNAME` - e.g. `atspriority1234`
+   - `ACR_PASSWORD` - the password from step 1
+
+3. **Publish the model as a GitHub Release.** On GitHub: **Releases ->
+   Draft a new release**. Give it any tag (e.g. `model-v1`), then drag
+   both `priority_classifier.joblib` and `priority_classifier.meta.json`
+   (from your local `webapp/model/` folder) into the "Attach binaries"
+   box near the bottom -> **Publish release**. (This keeps the model out
+   of the repo's regular commit history, same reasoning as
+   `webapp/.gitignore` - a Release's attached files are separate
+   storage, which is exactly why this workflow pulls from there instead
+   of from the repo itself.)
+
+4. **Run the workflow.** Go to the **Actions** tab -> **Build and push
+   webapp image** in the left sidebar -> **Run workflow** button -> **Run
+   workflow** again to confirm. Give it a couple of minutes and watch for
+   a green checkmark - it downloads the model files from the Release you
+   just published, builds the image, and pushes it to your registry.
+
+Once that's green, continue to step 4 below (App Service plan) exactly
+as written - same registry, same image, same tag, regardless of which
+option (A/B/C) built it.
+
+**Updating later:** publish a new Release (any new tag) with the fresh
+model files attached, then re-run the workflow from the Actions tab - it
+always grabs the most recent Release automatically.
+
 ## 4. Updating later (new model, or code changes)
 
 Whenever you retrain in Colab, or pull code updates into this repo, copy
