@@ -7,12 +7,16 @@ retrains anything, it just loads the model Colab already trained and
 scores whatever gets uploaded, the same fast per-report path the
 notebook's own "Section 7: Scoring brand-new reports" cell uses.
 
-I can't run the Azure deployment steps myself - I don't have access to
-your Azure subscription from here - so this is a copy-pasteable guide for
-you to run. If a command fails because of how your organization's Azure
-is set up (permissions, naming policies, a required tag, etc.), that's
-expected to vary - tell me the exact error and I can help adjust the
-command, I just can't run it for you.
+I can't run any of these deployment steps myself - I don't have access to
+your cloud accounts from here - so this is a copy-pasteable guide for you
+to run. If a step fails in a way this doesn't cover, tell me the exact
+error and I can help adjust it, I just can't run it for you.
+
+**Which deployment section to use:** start with **3. Deploy to Render**
+below - it's free with no credit card required and far fewer steps.
+Azure App Service is documented after it as an alternative, for a
+work-provisioned/IT-managed Azure subscription specifically (a personal
+Azure free trial can't actually run this - see that section's notes).
 
 ## 1. Get the trained model out of Colab
 
@@ -50,7 +54,76 @@ pip install -r requirements.txt
 python app.py   # http://localhost:8000
 ```
 
-## 3. Deploy to Azure App Service
+## 3. Deploy to Render (recommended - free, no credit card)
+
+[Render](https://render.com) hosts a Docker image straight from your
+GitHub repo, no separate registry or CLI needed - it's a much shorter
+path than Azure. One caveat worth knowing up front: Render's free tier
+gives 512 MB of RAM, and this app's embedding model can be memory-hungry
+enough to bump into that. Worth trying first regardless since it's free
+and quick to set up - if it crashes on startup or on the first upload,
+that's the signal to fall back to Streamlit Community Cloud instead (ask
+me and I'll adapt this app for that path, same idea, 1 GB free instead
+of 512 MB).
+
+1. **Sign up at [render.com](https://render.com)** using your GitHub
+   account - no credit card anywhere in this flow.
+
+2. **New -> Web Service**, and connect the GitHub repo this code lives
+   in. Pick the branch you want deployed.
+
+3. On the settings screen:
+   - **Runtime**: Docker
+   - **Dockerfile Path**: `webapp/Dockerfile`
+   - **Docker Build Context Directory**: `.` (a single dot - the repo
+     root, since the Dockerfile needs both `ats_priority_checker/` and
+     `webapp/` alongside each other)
+   - **Instance Type**: Free
+
+   Click **Deploy Web Service**. It'll fail on this first deploy (no
+   model loaded yet) - that's expected, continue to the next step.
+
+4. **Add your trained model as Secret Files**, so it never has to go
+   into git (same reasoning as `webapp/.gitignore`). In the new
+   service's page, left sidebar -> **Environment** -> **Secret Files**
+   -> **+ Add Secret File**, twice:
+
+   - **Filename**: `priority_classifier.meta.json` -> **Contents**: open
+     that file from your computer in any text editor, copy everything,
+     paste it in.
+   - **Filename**: `priority_classifier.joblib.b64` -> **Contents**: this
+     one's a binary file, so it needs to be converted to text first.
+     Open **PowerShell** on your computer (Start menu -> search
+     "PowerShell") and run, adjusting the path to wherever your
+     downloaded file actually is:
+     ```powershell
+     [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\priority_classifier.joblib")) | Set-Clipboard
+     ```
+     That copies a long block of text to your clipboard - paste it
+     directly into the Contents field on Render.
+
+   Click **Save Changes** - this triggers a fresh deploy that picks up
+   both files automatically (the Dockerfile's entrypoint script decodes
+   the `.b64` one back to a real file before starting the app).
+
+5. Give it a few minutes. Once the deploy shows **Live**, open the URL
+   shown at the top of the service page (something like
+   `https://ats-priority-checker.onrender.com`) and try uploading a
+   report PDF.
+
+**Updating later:** retraining just means replacing the
+`priority_classifier.joblib.b64` / `priority_classifier.meta.json`
+Secret File contents the same way (Environment -> Secret Files -> edit
+-> Save Changes) - no rebuild command to run yourself. A code change
+just needs a normal `git push` to the branch Render is watching; it
+redeploys automatically.
+
+## Alternative: Deploy to Azure App Service
+
+Use this instead of Render only if you have (or can get) a real,
+work-provisioned Azure subscription - not a personal Azure free trial,
+which is blocked from the compute quota this needs (see the quota
+troubleshooting further down if you're unsure which kind you have).
 
 Two ways to do this - same end result, pick whichever fits what you have
 installed. **If you don't have (or can't install) the Azure CLI - e.g.
@@ -261,7 +334,7 @@ option (A/B/C) built it.
 model files attached, then re-run the workflow from the Actions tab - it
 always grabs the most recent Release automatically.
 
-## 4. Updating later (new model, or code changes)
+## 4. Updating later (Azure path - new model, or code changes)
 
 Whenever you retrain in Colab, or pull code updates into this repo, copy
 the fresh model files into `webapp/model/` (step 1 above), then rebuild

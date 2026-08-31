@@ -1,5 +1,6 @@
-# Deploy target: Azure App Service for Containers (Linux).
-# See webapp/README.md for the actual `az` commands to build and push this.
+# Deploy target: Render (recommended, free) or Azure App Service for
+# Containers (Linux), as an alternative for a work-provisioned Azure
+# subscription. See webapp/README.md for the actual deploy steps.
 FROM python:3.11-slim
 
 # tesseract-ocr is the same system dependency the Colab notebook installs
@@ -38,4 +39,9 @@ COPY webapp /app/webapp
 EXPOSE 80
 WORKDIR /app/webapp
 
-CMD ["gunicorn", "--bind", "0.0.0.0:80", "--timeout", "180", "--workers", "2", "app:app"]
+# render-entrypoint.sh handles Render's "Secret Files" model-loading
+# step (see webapp/README.md, "3. Deploy to Render") and is a harmless
+# no-op everywhere else - it just execs gunicorn the same as before once
+# that's done.
+RUN chmod +x /app/webapp/render-entrypoint.sh
+ENTRYPOINT ["/app/webapp/render-entrypoint.sh"]
