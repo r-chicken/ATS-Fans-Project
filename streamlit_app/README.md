@@ -12,6 +12,16 @@ exit code 137, or Render emailing about a "server failure" / "Killed" in
 the logs) - Streamlit Community Cloud's free tier gives 1 GB of RAM
 instead of Render's 512 MB.
 
+Note for anyone touching this later: `tesseract-ocr` (the system package
+this app needs for OCR, same as `webapp/Dockerfile` installs) is
+declared in a `packages.txt` at the **repo root**, not inside this
+folder - Streamlit Community Cloud only reads that file from the root,
+even though `requirements.txt` is allowed to sit next to `app.py` like
+it does here. Putting it in `streamlit_app/` instead is silently
+ignored, no error, it just quietly never installs tesseract - if OCR
+starts failing with "tesseract is not installed or it's not in your
+PATH" again, check that `packages.txt` is still at the root first.
+
 ## 1. Create the app
 
 1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in
