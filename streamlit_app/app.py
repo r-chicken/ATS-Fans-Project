@@ -32,6 +32,21 @@ from ats_priority_checker.model import priority_recommendation_table, report_tex
 
 st.set_page_config(page_title="ATS Priority Checker", layout="wide")
 
+# Tighter padding/spacing on each report card so more fit on screen at
+# once - targets Streamlit's current internal class names for a
+# bordered container, so this is the one part of the page that could
+# go back to normal spacing (harmlessly, not break anything) if a
+# future Streamlit version renames them.
+st.markdown(
+    """
+    <style>
+    [data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 0.4rem; }
+    [data-testid="stVerticalBlockBorderWrapper"] > div > div { gap: 0.35rem; padding: 0.6rem 1rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 @st.cache_resource(show_spinner="Loading model (first run only)...")
 def _load_state() -> dict:
@@ -130,10 +145,15 @@ def _priority_str(value) -> str:
     return "-" if pd.isna(value) else f"P{int(value)}"
 
 
-# Standard most-to-least-severe gradient (P1 = red = most urgent, P4 =
-# green = least). Approximated, not pixel-matched to any specific
-# internal color scheme - swap these if that needs to match exactly.
-_PRIORITY_COLORS = {1: "#e53935", 2: "#fb8c00", 3: "#f9a825", 4: "#43a047"}
+# Matched to the reference colors sent in chat (P1 red -> P4 green).
+# P3's yellow needs dark text instead of white to stay readable - the
+# other three keep white.
+_PRIORITY_COLORS = {
+    1: ("#e03131", "white"),
+    2: ("#f76707", "white"),
+    3: ("#ffd43b", "#1a1a1a"),
+    4: ("#2f9e44", "white"),
+}
 
 
 def _priority_badge(value, flagged: bool = False) -> str:
@@ -141,11 +161,11 @@ def _priority_badge(value, flagged: bool = False) -> str:
     when this particular source disagreed with the stated priority."""
     if pd.isna(value):
         return '<span style="color:#888;">-</span>'
-    color = _PRIORITY_COLORS.get(int(value), "#888")
+    bg, fg = _PRIORITY_COLORS.get(int(value), ("#888", "white"))
     star = ' <span style="color:#d32f2f;" title="Disagrees with stated priority">&#9733;</span>' if flagged else ""
     return (
-        f'<span style="background-color:{color}; color:white; padding:4px 14px; '
-        f'border-radius:8px; font-size:1.5rem; font-weight:600; display:inline-block;">'
+        f'<span style="background-color:{bg}; color:{fg}; padding:2px 10px; '
+        f'border-radius:6px; font-size:1.1rem; font-weight:600; display:inline-block;">'
         f"P{int(value)}</span>{star}"
     )
 
@@ -174,7 +194,7 @@ def _render_report_card(row: pd.Series) -> None:
         text_disagrees = _disagrees(row.get("text_agrees_with_stated"))
         graph_disagrees = _disagrees(row.get("graph_agrees_with_stated"))
 
-        cols = st.columns(3)
+        cols = st.columns(3, gap="small")
         with cols[0]:
             st.caption("Stated Priority")
             st.markdown(_priority_badge(stated), unsafe_allow_html=True)
