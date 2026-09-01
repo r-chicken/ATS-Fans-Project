@@ -130,6 +130,26 @@ def _priority_str(value) -> str:
     return "-" if pd.isna(value) else f"P{int(value)}"
 
 
+# Standard most-to-least-severe gradient (P1 = red = most urgent, P4 =
+# green = least). Approximated, not pixel-matched to any specific
+# internal color scheme - swap these if that needs to match exactly.
+_PRIORITY_COLORS = {1: "#e53935", 2: "#fb8c00", 3: "#f9a825", 4: "#43a047"}
+
+
+def _priority_badge(value, flagged: bool = False) -> str:
+    """A colored pill for a priority value, with a red star appended
+    when this particular source disagreed with the stated priority."""
+    if pd.isna(value):
+        return '<span style="color:#888;">-</span>'
+    color = _PRIORITY_COLORS.get(int(value), "#888")
+    star = ' <span style="color:#d32f2f;" title="Disagrees with stated priority">&#9733;</span>' if flagged else ""
+    return (
+        f'<span style="background-color:{color}; color:white; padding:4px 14px; '
+        f'border-radius:8px; font-size:1.5rem; font-weight:600; display:inline-block;">'
+        f"P{int(value)}</span>{star}"
+    )
+
+
 def _disagrees(value) -> bool:
     """True only when this source actually gave an answer AND it didn't
     match - a missing reading (spectrum couldn't be read, etc.) is a
@@ -151,15 +171,24 @@ def _render_report_card(row: pd.Series) -> None:
         text_pred = row.get("text_recommended_priority")
         spectrum_pred = row.get("graph_recommended_priority")
 
+        text_disagrees = _disagrees(row.get("text_agrees_with_stated"))
+        graph_disagrees = _disagrees(row.get("graph_agrees_with_stated"))
+
         cols = st.columns(3)
-        cols[0].metric("Stated Priority", _priority_str(stated))
-        cols[1].metric("Text Recommends", _priority_str(text_pred))
-        cols[2].metric("Spectrum Recommends", _priority_str(spectrum_pred))
+        with cols[0]:
+            st.caption("Stated Priority")
+            st.markdown(_priority_badge(stated), unsafe_allow_html=True)
+        with cols[1]:
+            st.caption("Text Recommends")
+            st.markdown(_priority_badge(text_pred, flagged=text_disagrees), unsafe_allow_html=True)
+        with cols[2]:
+            st.caption("Spectrum Recommends")
+            st.markdown(_priority_badge(spectrum_pred, flagged=graph_disagrees), unsafe_allow_html=True)
 
         notes = []
-        if _disagrees(row.get("text_agrees_with_stated")):
+        if text_disagrees:
             notes.append(f"Check text; AI flagged it as {_priority_str(text_pred)} instead of {_priority_str(stated)}.")
-        if _disagrees(row.get("graph_agrees_with_stated")):
+        if graph_disagrees:
             notes.append(f"Check spectrum; AI flagged it as {_priority_str(spectrum_pred)} instead of {_priority_str(stated)}.")
 
         if notes:
