@@ -113,7 +113,8 @@ def _format_table_for_display(table: pd.DataFrame) -> pd.DataFrame:
     """Blank for missing, Yes/No for booleans (including pandas' nullable
     "boolean" dtype, which otherwise prints as the confusing literal
     string "<NA>") - same idea as webapp/app.py's version of this, just
-    returning a DataFrame here since st.dataframe wants one."""
+    returning a DataFrame here since st.dataframe wants one. Only used
+    for the optional raw-table expander below the cards."""
     display = table.copy()
     for col in display.columns:
         if str(display[col].dtype) == "boolean":
@@ -123,6 +124,54 @@ def _format_table_for_display(table: pd.DataFrame) -> pd.DataFrame:
         else:
             display[col] = display[col].fillna("")
     return display
+
+
+def _priority_str(value) -> str:
+    return "-" if pd.isna(value) else f"P{int(value)}"
+
+
+def _disagrees(value) -> bool:
+    """True only when this source actually gave an answer AND it didn't
+    match - a missing reading (spectrum couldn't be read, etc.) is a
+    different situation from a disagreement and shouldn't be flagged as
+    one."""
+    return pd.notna(value) and not bool(value)
+
+
+def _render_report_card(row: pd.Series) -> None:
+    with st.container(border=True):
+        equipment = row.get("equipment_id")
+        header = str(equipment) if pd.notna(equipment) else "Unknown equipment"
+        point = row.get("measurement_point")
+        if pd.notna(point):
+            header += f"  ·  {point}"
+        st.markdown(f"**{header}**")
+
+        stated = row.get("priority_raw")
+        text_pred = row.get("text_recommended_priority")
+        spectrum_pred = row.get("graph_recommended_priority")
+
+        cols = st.columns(3)
+        cols[0].metric("Stated Priority", _priority_str(stated))
+        cols[1].metric("Text Recommends", _priority_str(text_pred))
+        cols[2].metric("Spectrum Recommends", _priority_str(spectrum_pred))
+
+        notes = []
+        if _disagrees(row.get("text_agrees_with_stated")):
+            notes.append(f"Check text; AI flagged it as {_priority_str(text_pred)} instead of {_priority_str(stated)}.")
+        if _disagrees(row.get("graph_agrees_with_stated")):
+            notes.append(f"Check spectrum; AI flagged it as {_priority_str(spectrum_pred)} instead of {_priority_str(stated)}.")
+
+        if notes:
+            st.warning("  \n".join(notes))
+        else:
+            st.success("Text and spectrum both agree with the stated priority.")
+
+        # A missing spectrum reading isn't a disagreement (nothing to
+        # compare), but it's still worth surfacing why - same reasoning
+        # as adding parse_notes to the table in the first place.
+        if pd.isna(spectrum_pred) and row.get("parse_notes"):
+            st.caption(f"Spectrum not read: {row['parse_notes']}")
 
 
 st.title("ATS Vibration Priority Checker")
@@ -153,15 +202,17 @@ if go:
             st.warning("No readable report pages found in the uploaded PDF(s).")
         else:
             flagged = table["any_disagreement"].eq(True).fillna(False) if "any_disagreement" in table.columns else pd.Series(False, index=table.index)
-            display = _format_table_for_display(table)
 
-            def _highlight(row: pd.Series) -> list[str]:
-                color = "background-color: #fff3cd" if flagged.loc[row.name] else ""
-                return [color] * len(row)
+            st.caption(
+                f"{len(table)} report(s) analyzed - {int(flagged.sum())} flagged for review."
+                if flagged.any()
+                else f"{len(table)} report(s) analyzed - text and spectrum agree with the stated priority on all of them."
+            )
+            for _, row in table.iterrows():
+                _render_report_card(row)
 
-            st.dataframe(display.style.apply(_highlight, axis=1), use_container_width=True)
-            if flagged.any():
-                st.caption(f"{int(flagged.sum())} row(s) highlighted - text and/or spectrum disagree with the stated priority.")
+            with st.expander("Show full data table"):
+                st.dataframe(_format_table_for_display(table), use_container_width=True)
 
 st.divider()
 st.markdown(
