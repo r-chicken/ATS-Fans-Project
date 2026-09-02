@@ -187,7 +187,7 @@ MEASUREMENT_POINT_RE = re.compile(r"\\\s*(?P<location>[^,\n]{2,60}?)\s*,")
 # while a genuine longer word that happened to start with H/V/A (lowercase
 # continuing right after) would fail this and correctly NOT be treated as
 # the end.
-_MEASUREMENT_POINT_CORE_RE = re.compile(r"[FM][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA](?=[^a-z]|$)")
+_MEASUREMENT_POINT_CORE_RE = re.compile(r"[FMP][a-z]*(?:\s+[A-Za-z]+)*?\s+[HVA](?=[^a-z]|$)")
 
 # Known OCR misreads worth correcting outright rather than leaving to the
 # repetition-voting below to (usually) outvote - confirmed on real reports:
@@ -204,14 +204,14 @@ _KNOWN_OCR_FIXES = [
 
 def detect_measurement_point(ocr_text: str) -> str | None:
     """Best-effort read of the sensor location/direction label from the
-    chart's own panel titles (e.g. "Mtr Shaft H", "Fan End H") - returns
-    None if nothing matched.
+    chart's own panel titles (e.g. "Mtr Shaft H", "Fan End H", "Pump
+    Shaft H") - returns None if nothing matched.
 
     The same label is printed redundantly under all three panels
     (Spectrum, Waterfall, Trend) on every real report seen, so rather than
     trusting whichever match comes first, this takes the most common
     string across all of them (after trimming each one down to its core
-    "{Fan|Mtr} ... {H|V|A}" span first - see _MEASUREMENT_POINT_CORE_RE -
+    "{Fan|Mtr|Pump} ... {H|V|A}" span first - see _MEASUREMENT_POINT_CORE_RE -
     so noise before/after that span doesn't split votes for what's really
     the same location across repeats within one image, not just across
     reports) - the same "let repetition outvote a one-off OCR slip" idea
