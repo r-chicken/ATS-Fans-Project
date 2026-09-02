@@ -242,21 +242,7 @@ def _disagrees(value) -> bool:
     return pd.notna(value) and not bool(value)
 
 
-def _pdf_link_html(pdf_bytes, filename: str = "report.pdf") -> str:
-    """A small clickable icon that opens the original PDF in a new tab,
-    via a data: URI - the uploaded file itself no longer exists on disk
-    by the time results render (see _score_pdfs's pdf_bytes_by_stem
-    docstring note), so this is the only way back to it without
-    standing up separate file storage."""
-    if not isinstance(pdf_bytes, (bytes, bytearray)):
-        return ""
-    b64 = base64.b64encode(pdf_bytes).decode()
-    return (
-        f'<div style="text-align:right;">'
-        f'<a href="data:application/pdf;base64,{b64}" target="_blank" rel="noopener" '
-        f'title="Open {filename}" style="text-decoration:none; font-size:1.3rem;">&#128196;</a>'
-        f"</div>"
-    )
+_KIND_LABELS = {"fans": "Fan model", "pumps": "Pump model"}
 
 
 def _render_report_card(row: pd.Series) -> None:
@@ -273,10 +259,23 @@ def _render_report_card(row: pd.Series) -> None:
             if pd.notna(site):
                 st.caption(str(site))
             st.markdown(f"**{header}**")
+            kind = row.get("equipment_kind")
+            if pd.notna(kind):
+                # Visible confirmation of which model actually scored this
+                # report - fans and pumps are routed to separate joblib
+                # bundles (see _score_pdfs), this is here so that's checkable
+                # at a glance instead of just trusted.
+                st.caption(f"Scored with: {_KIND_LABELS.get(kind, kind)}")
         with link_col:
-            link_html = _pdf_link_html(row.get("pdf_bytes"), str(row.get("source_filename") or "report.pdf"))
-            if link_html:
-                st.markdown(link_html, unsafe_allow_html=True)
+            pdf_bytes = row.get("pdf_bytes")
+            if isinstance(pdf_bytes, (bytes, bytearray)):
+                st.download_button(
+                    "PDF",
+                    data=bytes(pdf_bytes),
+                    file_name=str(row.get("source_filename") or "report.pdf"),
+                    mime="application/pdf",
+                    key=f"pdf_{row.get('report_id', id(row))}",
+                )
 
         stated = row.get("priority_raw")
         text_pred = row.get("text_recommended_priority")
