@@ -98,7 +98,9 @@ def _classify_equipment_kind(equipment_id) -> str | None:
     return None
 
 
-def _score_pdfs(paths: list[Path], model_states: dict[str, dict | None]) -> pd.DataFrame:
+def _score_pdfs(
+    paths: list[Path], model_states: dict[str, dict | None], pdf_bytes_by_stem: dict[str, bytes] | None = None
+) -> pd.DataFrame:
     """Same per-report extraction path as process_pdf, for every page of
     every uploaded PDF - no batch dataset, no escalation history, just
     each report's own text and its own Spectrum chart against its own
@@ -111,7 +113,13 @@ def _score_pdfs(paths: list[Path], model_states: dict[str, dict | None]) -> pd.D
     told apart, or whose kind's model isn't configured (model_states[...]
     is None - see _load_model_state), still gets a spectrum reading
     (that's kind-independent, pure pixel/OCR reading), just no
-    text-based prediction, with a note explaining why."""
+    text-based prediction, with a note explaining why.
+
+    pdf_bytes_by_stem (source filename without extension -> original
+    uploaded bytes) rides along per row so each result card can offer
+    the original PDF back - the temp files themselves are gone by the
+    time results render (cleaned up when the caller's
+    TemporaryDirectory exits), so this is the only copy left."""
     rows = []
     for path in paths:
         try:
@@ -122,6 +130,8 @@ def _score_pdfs(paths: list[Path], model_states: dict[str, dict | None]) -> pd.D
         for page_number, rec in enumerate(records, start=1):
             d = dataclasses.asdict(rec)
             d["report_id"] = f"{path.stem}_p{page_number}"
+            d["source_filename"] = path.name
+            d["pdf_bytes"] = (pdf_bytes_by_stem or {}).get(path.stem)
             rows.append(d)
 
     df = pd.DataFrame(rows)
@@ -159,15 +169,21 @@ def _score_pdfs(paths: list[Path], model_states: dict[str, dict | None]) -> pd.D
 
     table = priority_recommendation_table(usable)
     table["equipment_kind"] = usable["equipment_kind"]
-    # priority_recommendation_table doesn't carry this through on its own
-    # (see its docstring - it's a verdict table, not a debug dump), but
-    # it's the only place that explains a blank spectrum/text reading (no
-    # chart image found, OCR failing, no model configured for this kind,
-    # etc.), so it's worth showing here.
+    # priority_recommendation_table only copies over a curated set of
+    # columns (see its docstring - it's a verdict table, not a debug
+    # dump), so anything else worth showing on a card has to be attached
+    # explicitly here, same as parse_notes above.
     table["parse_notes"] = usable["parse_notes"]
+    for col in ("site", "source_filename", "pdf_bytes"):
+        if col in usable.columns:
+            table[col] = usable[col]
     unusable = df[df["priority_num"].isna()][["report_id"]].copy()
     if not unusable.empty:
-        unusable["parse_notes"] = df.loc[unusable.index, "parse_notes"] if "parse_notes" in df.columns else "no priority found on this page"
+        for col in ("parse_notes", "site", "source_filename", "pdf_bytes"):
+            if col in df.columns:
+                unusable[col] = df.loc[unusable.index, col]
+        if "parse_notes" not in unusable.columns:
+            unusable["parse_notes"] = "no priority found on this page"
         table = pd.concat([table, unusable], ignore_index=True)
     return table
 
@@ -226,6 +242,23 @@ def _disagrees(value) -> bool:
     return pd.notna(value) and not bool(value)
 
 
+def _pdf_link_html(pdf_bytes, filename: str = "report.pdf") -> str:
+    """A small clickable icon that opens the original PDF in a new tab,
+    via a data: URI - the uploaded file itself no longer exists on disk
+    by the time results render (see _score_pdfs's pdf_bytes_by_stem
+    docstring note), so this is the only way back to it without
+    standing up separate file storage."""
+    if not isinstance(pdf_bytes, (bytes, bytearray)):
+        return ""
+    b64 = base64.b64encode(pdf_bytes).decode()
+    return (
+        f'<div style="text-align:right;">'
+        f'<a href="data:application/pdf;base64,{b64}" target="_blank" rel="noopener" '
+        f'title="Open {filename}" style="text-decoration:none; font-size:1.3rem;">&#128196;</a>'
+        f"</div>"
+    )
+
+
 def _render_report_card(row: pd.Series) -> None:
     with st.container(border=True):
         equipment = row.get("equipment_id")
@@ -233,7 +266,17 @@ def _render_report_card(row: pd.Series) -> None:
         point = row.get("measurement_point")
         if pd.notna(point):
             header += f"  ·  {point}"
-        st.markdown(f"**{header}**")
+
+        title_col, link_col = st.columns([6, 1])
+        with title_col:
+            site = row.get("site")
+            if pd.notna(site):
+                st.caption(str(site))
+            st.markdown(f"**{header}**")
+        with link_col:
+            link_html = _pdf_link_html(row.get("pdf_bytes"), str(row.get("source_filename") or "report.pdf"))
+            if link_html:
+                st.markdown(link_html, unsafe_allow_html=True)
 
         stated = row.get("priority_raw")
         text_pred = row.get("text_recommended_priority")
@@ -296,15 +339,18 @@ if go:
     with st.spinner("Reading and scoring report(s)..."):
         with tempfile.TemporaryDirectory() as tmp_dir:
             paths = []
+            pdf_bytes_by_stem = {}
             for f in uploaded:
+                data = f.getvalue()
                 path = Path(tmp_dir) / f.name
-                path.write_bytes(f.getvalue())
+                path.write_bytes(data)
                 paths.append(path)
+                pdf_bytes_by_stem[path.stem] = data
             model_states = {
                 "fans": _try_load_model_state("model_fans"),
                 "pumps": _try_load_model_state("model_pumps"),
             }
-            table = _score_pdfs(paths, model_states)
+            table = _score_pdfs(paths, model_states, pdf_bytes_by_stem)
 
     if table.empty:
         st.warning("No readable report pages found in the uploaded PDF(s).")
