@@ -80,13 +80,38 @@ def _load_model_state(secrets_key: str) -> dict:
     return {"clf": clf, "embedder": embedder}
 
 
-def _score_pdfs(paths: list[Path], state: dict) -> pd.DataFrame:
+def _classify_equipment_kind(equipment_id) -> str | None:
+    """Fan vs. pump, straight off the equipment description text
+    extract.py already parses out of the report (e.g. 'EF-3521 Exhaust
+    Fan', 'Fryer Hot Oil Pump') - both words are spelled out in that
+    string on every report seen so far, so a plain keyword check is
+    simpler and more transparent than a learned classifier for this one
+    decision. Returns None when neither word appears, so the caller can
+    flag it rather than guess."""
+    if pd.isna(equipment_id):
+        return None
+    text = str(equipment_id).lower()
+    if "pump" in text:
+        return "pumps"
+    if "fan" in text:
+        return "fans"
+    return None
+
+
+def _score_pdfs(paths: list[Path], model_states: dict[str, dict | None]) -> pd.DataFrame:
     """Same per-report extraction path as process_pdf, for every page of
-    every uploaded PDF, scored against the given model state (see
-    _load_model_state - which model this is, fans vs. pumps, is the
-    caller's choice) - no batch dataset, no escalation history, just
-    this report's own text and its own Spectrum chart against its own
-    stated priority (see model.priority_recommendation_table)."""
+    every uploaded PDF - no batch dataset, no escalation history, just
+    each report's own text and its own Spectrum chart against its own
+    stated priority (see model.priority_recommendation_table).
+
+    One shared upload, auto-sorted by _classify_equipment_kind: fans are
+    scored against model_states["fans"], pumps against
+    model_states["pumps"] - each gets the model actually trained for it
+    rather than one model guessing across both. A report that can't be
+    told apart, or whose kind's model isn't configured (model_states[...]
+    is None - see _load_model_state), still gets a spectrum reading
+    (that's kind-independent, pure pixel/OCR reading), just no
+    text-based prediction, with a note explaining why."""
     rows = []
     for path in paths:
         try:
@@ -108,18 +133,38 @@ def _score_pdfs(paths: list[Path], state: dict) -> pd.DataFrame:
         df["predicted_priority"] = None
         return df
 
-    texts = usable.apply(report_text, axis=1).tolist()
-    embeddings = state["embedder"].encode(texts, normalize_embeddings=True)
-    usable["predicted_priority"] = state["clf"].predict(embeddings)
+    if "parse_notes" not in usable.columns:
+        usable["parse_notes"] = ""
+    usable["parse_notes"] = usable["parse_notes"].fillna("")
+    usable["equipment_kind"] = usable["equipment_id"].apply(_classify_equipment_kind)
+    usable["predicted_priority"] = None
+
+    unclassified = usable["equipment_kind"].isna()
+    usable.loc[unclassified, "parse_notes"] = (
+        usable.loc[unclassified, "parse_notes"] + "; couldn't tell fan vs. pump from the equipment description - not text-scored"
+    ).str.strip("; ")
+
+    for kind, state in model_states.items():
+        subset = usable[usable["equipment_kind"] == kind]
+        if subset.empty:
+            continue
+        if state is None:
+            usable.loc[subset.index, "parse_notes"] = (
+                subset["parse_notes"] + f"; no {kind} model configured yet"
+            ).str.strip("; ")
+            continue
+        texts = subset.apply(report_text, axis=1).tolist()
+        embeddings = state["embedder"].encode(texts, normalize_embeddings=True)
+        usable.loc[subset.index, "predicted_priority"] = state["clf"].predict(embeddings)
 
     table = priority_recommendation_table(usable)
+    table["equipment_kind"] = usable["equipment_kind"]
     # priority_recommendation_table doesn't carry this through on its own
     # (see its docstring - it's a verdict table, not a debug dump), but
-    # it's the only place that explains a blank spectrum reading (no
-    # chart image found on the page vs. OCR failing vs. genuinely nothing
-    # to report), so it's worth showing here.
-    if "parse_notes" in usable.columns:
-        table["parse_notes"] = usable["parse_notes"]
+    # it's the only place that explains a blank spectrum/text reading (no
+    # chart image found, OCR failing, no model configured for this kind,
+    # etc.), so it's worth showing here.
+    table["parse_notes"] = usable["parse_notes"]
     unusable = df[df["priority_num"].isna()][["report_id"]].copy()
     if not unusable.empty:
         unusable["parse_notes"] = df.loc[unusable.index, "parse_notes"] if "parse_notes" in df.columns else "no priority found on this page"
@@ -219,27 +264,35 @@ def _render_report_card(row: pd.Series) -> None:
         else:
             st.success("Text and spectrum both agree with the stated priority.")
 
-        # A missing spectrum reading isn't a disagreement (nothing to
-        # compare), but it's still worth surfacing why - same reasoning
-        # as adding parse_notes to the table in the first place.
-        if pd.isna(spectrum_pred) and row.get("parse_notes"):
-            st.caption(f"Spectrum not read: {row['parse_notes']}")
+        # A missing reading isn't a disagreement (nothing to compare),
+        # but it's still worth surfacing why - could be no chart image,
+        # OCR failing, an unclear fan-vs-pump call, or that kind's model
+        # not being configured yet.
+        if row.get("parse_notes"):
+            st.caption(f"Note: {row['parse_notes']}")
 
 
-def _render_scoring_section(label: str, secrets_key: str, key_prefix: str) -> None:
-    """One independent "upload -> Analyze -> results" section, backed by
-    its own model (own Secrets key, own cache_resource entry). Widget
-    keys are prefixed so the Fans and Pumps sections don't collide with
-    each other - Streamlit requires unique keys per widget on a page."""
-    st.header(label)
-    uploaded = st.file_uploader(
-        "Report PDF(s)", type=["pdf"], accept_multiple_files=True, key=f"{key_prefix}_upload"
-    )
-    go = st.button("Analyze", type="primary", disabled=not uploaded, key=f"{key_prefix}_analyze")
+def _try_load_model_state(secrets_key: str) -> dict | None:
+    """None (not an exception) when that kind's Secrets aren't
+    configured yet, so one missing model doesn't block scoring the
+    other kind - see _score_pdfs's per-kind handling of a None state."""
+    try:
+        return _load_model_state(secrets_key)
+    except RuntimeError:
+        return None
 
-    if not go:
-        return
 
+st.title("ATS Vibration Priority Checker")
+st.caption(
+    "Upload report PDF(s) - fans and pumps together is fine, each report is "
+    "automatically sorted and scored against the right model based on what "
+    "equipment it's for."
+)
+
+uploaded = st.file_uploader("Report PDF(s)", type=["pdf"], accept_multiple_files=True)
+go = st.button("Analyze", type="primary", disabled=not uploaded)
+
+if go:
     with st.spinner("Reading and scoring report(s)..."):
         with tempfile.TemporaryDirectory() as tmp_dir:
             paths = []
@@ -247,42 +300,43 @@ def _render_scoring_section(label: str, secrets_key: str, key_prefix: str) -> No
                 path = Path(tmp_dir) / f.name
                 path.write_bytes(f.getvalue())
                 paths.append(path)
-            table = None
-            try:
-                state = _load_model_state(secrets_key)
-                table = _score_pdfs(paths, state)
-            except RuntimeError as exc:
-                st.error(str(exc))
-
-    if table is None:
-        return
+            model_states = {
+                "fans": _try_load_model_state("model_fans"),
+                "pumps": _try_load_model_state("model_pumps"),
+            }
+            table = _score_pdfs(paths, model_states)
 
     if table.empty:
         st.warning("No readable report pages found in the uploaded PDF(s).")
-        return
+    else:
+        flagged = table["any_disagreement"].eq(True).fillna(False) if "any_disagreement" in table.columns else pd.Series(False, index=table.index)
+        st.caption(
+            f"{len(table)} report(s) analyzed - {int(flagged.sum())} flagged for review."
+            if flagged.any()
+            else f"{len(table)} report(s) analyzed - text and spectrum agree with the stated priority on all of them."
+        )
 
-    flagged = table["any_disagreement"].eq(True).fillna(False) if "any_disagreement" in table.columns else pd.Series(False, index=table.index)
-    st.caption(
-        f"{len(table)} report(s) analyzed - {int(flagged.sum())} flagged for review."
-        if flagged.any()
-        else f"{len(table)} report(s) analyzed - text and spectrum agree with the stated priority on all of them."
-    )
-    for _, row in table.iterrows():
-        _render_report_card(row)
+        has_kind_column = "equipment_kind" in table.columns
+        for kind, heading in (("fans", "Fans"), ("pumps", "Pumps")):
+            subset = table[table["equipment_kind"] == kind] if has_kind_column else pd.DataFrame()
+            if subset.empty:
+                continue
+            st.header(heading)
+            for _, row in subset.iterrows():
+                _render_report_card(row)
 
-    with st.expander("Show full data table"):
-        st.dataframe(_format_table_for_display(table), use_container_width=True)
+        other = table[table["equipment_kind"].isna()] if has_kind_column else table
+        if not other.empty:
+            st.header("Needs Review")
+            st.caption(
+                "Couldn't automatically sort these into Fans or Pumps, or the page "
+                "itself couldn't be read - see the note on each card."
+            )
+            for _, row in other.iterrows():
+                _render_report_card(row)
 
-
-st.title("ATS Vibration Priority Checker")
-st.caption(
-    "Upload a report PDF to see whether the text and the Spectrum chart "
-    "agree with the priority the report states."
-)
-
-_render_scoring_section("Score Fans", "model_fans", "fans")
-st.divider()
-_render_scoring_section("Score Pumps", "model_pumps", "pumps")
+        with st.expander("Show full data table"):
+            st.dataframe(_format_table_for_display(table), use_container_width=True)
 
 st.divider()
 st.markdown(

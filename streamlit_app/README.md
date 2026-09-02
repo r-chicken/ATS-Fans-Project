@@ -34,9 +34,11 @@ PATH" again, check that `packages.txt` is still at the root first.
 
 ## 2. Add your trained models as Secrets
 
-The page has two independent sections, **Score Fans** and **Score
-Pumps**, each backed by its own trained model bundle - so there are two
-sets of files to add, under two different Secrets keys.
+There's a single upload box - each uploaded report is automatically
+sorted into a Fans or Pumps group (from the equipment description text
+already parsed out of the report, e.g. "...Exhaust Fan" vs. "...Hot Oil
+Pump") and scored against that group's own trained model. That means
+there are two model bundles to add, under two different Secrets keys.
 
 Streamlit Community Cloud's Secrets are a plain-text box (TOML format),
 so the model files go in there instead of git - same reasoning as
@@ -83,9 +85,9 @@ For each of the two sections:
 
 Click **Save** - the app restarts automatically and picks up all four
 values. If you only have one model ready right now, it's fine to fill
-in just that section and add the other later - the other section will
-show an error only when someone actually clicks its Analyze button, it
-won't block the section that does have a model.
+in just that section and add the other later - reports of that kind
+just come back with a note explaining there's no model configured for
+them yet, while the kind that IS configured still scores normally.
 
 ## 3. Open it
 
