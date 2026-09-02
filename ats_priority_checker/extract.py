@@ -39,7 +39,7 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 
-from .graph_signals import detect_measurement_point, spectrum_priority_hint
+from .graph_signals import classify_equipment_kind, detect_measurement_point, spectrum_priority_hint
 
 PRIORITY_LINE_RE = re.compile(r"^(?P<equipment_id>.+?)\s*:\s*Priority\s*(?P<priority>\S+)\s*$")
 DATE_RE = re.compile(r"Date Tested:\s*(?P<date>.+)")
@@ -71,6 +71,7 @@ class ReportRecord:
     chart_ocr_text: str | None  # cached raw OCR of the chart image - see dataset.recompute_dataset
     parse_ok: bool
     parse_notes: str
+    equipment_kind: str | None = None  # "fans" | "pumps" | None - see graph_signals.classify_equipment_kind
 
 
 def extract_pages_text(pdf_path: str | Path) -> list[str]:
@@ -255,6 +256,7 @@ def process_pdf(
                 break
             text = page.get_text()
             fields = parse_report_fields(text)
+            equipment_kind = classify_equipment_kind(fields["equipment_id"])
 
             chart_img = largest_embedded_image(doc, page)
             score = colorfulness(chart_img) if chart_img is not None else None
@@ -273,7 +275,7 @@ def process_pdf(
                     ocr_text = ocr_image_text(chart_img)
                     style = classify_style_by_text(ocr_text)
                     measurement_point = detect_measurement_point(ocr_text)
-                    hint = spectrum_priority_hint(chart_img, ocr_text)
+                    hint = spectrum_priority_hint(chart_img, ocr_text, equipment_kind=equipment_kind)
                     spectrum_unit = hint["spectrum_unit"]
                     spectrum_peak_amplitude = hint["spectrum_peak_amplitude"]
                     spectrum_peak_amplitude_raw = hint["spectrum_peak_amplitude_raw"]
@@ -311,6 +313,7 @@ def process_pdf(
                     chart_ocr_text=ocr_text,
                     parse_ok=fields["parse_ok"],
                     parse_notes=fields["parse_notes"],
+                    equipment_kind=equipment_kind,
                 )
             )
     finally:

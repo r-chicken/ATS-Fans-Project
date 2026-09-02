@@ -80,24 +80,6 @@ def _load_model_state(secrets_key: str) -> dict:
     return {"clf": clf, "embedder": embedder}
 
 
-def _classify_equipment_kind(equipment_id) -> str | None:
-    """Fan vs. pump, straight off the equipment description text
-    extract.py already parses out of the report (e.g. 'EF-3521 Exhaust
-    Fan', 'Fryer Hot Oil Pump') - both words are spelled out in that
-    string on every report seen so far, so a plain keyword check is
-    simpler and more transparent than a learned classifier for this one
-    decision. Returns None when neither word appears, so the caller can
-    flag it rather than guess."""
-    if pd.isna(equipment_id):
-        return None
-    text = str(equipment_id).lower()
-    if "pump" in text:
-        return "pumps"
-    if "fan" in text:
-        return "fans"
-    return None
-
-
 def _score_pdfs(
     paths: list[Path], model_states: dict[str, dict | None], pdf_bytes_by_stem: dict[str, bytes] | None = None
 ) -> pd.DataFrame:
@@ -106,14 +88,17 @@ def _score_pdfs(
     each report's own text and its own Spectrum chart against its own
     stated priority (see model.priority_recommendation_table).
 
-    One shared upload, auto-sorted by _classify_equipment_kind: fans are
-    scored against model_states["fans"], pumps against
-    model_states["pumps"] - each gets the model actually trained for it
-    rather than one model guessing across both. A report that can't be
-    told apart, or whose kind's model isn't configured (model_states[...]
-    is None - see _load_model_state), still gets a spectrum reading
-    (that's kind-independent, pure pixel/OCR reading), just no
-    text-based prediction, with a note explaining why.
+    One shared upload, auto-sorted by equipment_kind (a ReportRecord
+    field now - see graph_signals.classify_equipment_kind - computed
+    inside process_pdf itself, since it's also needed there to pick the
+    right spectrum-reading thresholds, not just here to pick the right
+    text classifier): fans are scored against model_states["fans"],
+    pumps against model_states["pumps"] - each gets the model actually
+    trained for it rather than one model guessing across both. A report
+    that can't be told apart, or whose kind's model isn't configured
+    (model_states[...] is None - see _load_model_state), still gets a
+    spectrum reading (process_pdf already picked the right threshold set
+    for it), just no text-based prediction, with a note explaining why.
 
     pdf_bytes_by_stem (source filename without extension -> original
     uploaded bytes) rides along per row so each result card can offer
@@ -146,7 +131,8 @@ def _score_pdfs(
     if "parse_notes" not in usable.columns:
         usable["parse_notes"] = ""
     usable["parse_notes"] = usable["parse_notes"].fillna("")
-    usable["equipment_kind"] = usable["equipment_id"].apply(_classify_equipment_kind)
+    if "equipment_kind" not in usable.columns:
+        usable["equipment_kind"] = None
     usable["predicted_priority"] = None
 
     unclassified = usable["equipment_kind"].isna()

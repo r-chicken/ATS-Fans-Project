@@ -962,18 +962,139 @@ _UNIT_HINT_FNS = {
 }
 
 
-def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str) -> dict:
+# --- Pump-specific priority thresholds ----------------------------------
+# Ported from ATS-Pumps-Project (see that repo's graph_signals.py for the
+# full derivation/data behind each number - not repeated here, just the
+# functions). Pump equipment's amplitude behavior genuinely differs from
+# fans' (per the project owner) - these are separate fitted thresholds
+# on pump-only data, not the fan ones above with different numbers typed
+# in, and must stay separate rather than merged into one "combined"
+# threshold set for both.
+
+
+def pump_velocity_priority_hint(amp: float) -> int:
+    """Velocity (in/s) peak amplitude -> priority, PUMP EQUIPMENT ONLY.
+    >1.44 -> 1, 0.344-1.44 -> 2, 0.113-0.344 -> 3, <0.113 -> 4. Refit
+    against 88 hand-eyeballed pump reports - see ATS-Pumps-Project's
+    graph_signals.py, velocity_priority_hint, for the full derivation."""
+    if amp > 1.44:
+        return 1
+    if amp >= 0.344:
+        return 2
+    if amp >= 0.113:
+        return 3
+    return 4
+
+
+def _gE_location(measurement_point: str | None) -> str | None:
+    """Classify a measurement_point label (see detect_measurement_point)
+    as "Mtr" or "Pump" for pump_acceleration_enveloping_priority_hint's
+    location split - or None if it's neither (missing, or a location word
+    not seen on a gE reading). Ported from ATS-Pumps-Project."""
+    if not measurement_point:
+        return None
+    if measurement_point.startswith("Mtr"):
+        return "Mtr"
+    if measurement_point.startswith("Pump"):
+        return "Pump"
+    return None
+
+
+def _pump_acceleration_enveloping_priority_hint_motor(amp: float) -> int:
+    """Mtr-location half of pump_acceleration_enveloping_priority_hint's
+    gE split. >1.28 -> 1, 0.254-1.28 -> 2, 0.15-0.254 -> 3, <0.15 -> 4."""
+    if amp > 1.28:
+        return 1
+    if amp >= 0.254:
+        return 2
+    if amp >= 0.15:
+        return 3
+    return 4
+
+
+def _pump_acceleration_enveloping_priority_hint_pump(amp: float) -> int:
+    """Pump-location half of pump_acceleration_enveloping_priority_hint's
+    gE split. >0.9 -> 1, 0.183-0.9 -> 2, 0.02-0.183 -> 3, <0.02 -> 4. Per
+    ATS-Pumps-Project: the 0.9 P2/P1 boundary is extrapolated, not fitted
+    (zero eyeballed Pump-location Priority-1 gE reports existed there at
+    fit time) - trust it less than the other boundaries here."""
+    if amp > 0.9:
+        return 1
+    if amp >= 0.183:
+        return 2
+    if amp >= 0.02:
+        return 3
+    return 4
+
+
+def pump_acceleration_enveloping_priority_hint(amp: float, location: str | None) -> int | None:
+    """Acceleration enveloping (gE) peak amplitude -> priority, PUMP
+    EQUIPMENT ONLY - split by measurement location (Mtr vs. Pump - see
+    _gE_location), not one shared threshold. Returns None for an
+    unrecognized location rather than guessing: per ATS-Pumps-Project,
+    Motor-location gE reads 2-5x higher than Pump-location gE at the same
+    stated priority, so running a Pump reading through Mtr thresholds (or
+    vice versa) reads as far less severe than it actually is - worse than
+    admitting the location isn't known. See ATS-Pumps-Project's
+    graph_signals.py, acceleration_enveloping_priority_hint, for the full
+    derivation."""
+    if location == "Mtr":
+        return _pump_acceleration_enveloping_priority_hint_motor(amp)
+    if location == "Pump":
+        return _pump_acceleration_enveloping_priority_hint_pump(amp)
+    return None
+
+
+def classify_equipment_kind(equipment_id: str | None) -> str | None:
+    """Fan vs. pump, straight off the equipment description text
+    extract.py parses out of the report (e.g. 'EF-3521 Exhaust Fan',
+    'Fryer Hot Oil Pump') - both words are spelled out in that string on
+    every report seen so far, so a plain keyword check is simpler and
+    more transparent than a learned classifier for this one decision.
+    Returns None when neither word appears, so the caller can flag it
+    rather than guess which threshold set applies."""
+    if not equipment_id:
+        return None
+    text = equipment_id.lower()
+    if "pump" in text:
+        return "pumps"
+    if "fan" in text:
+        return "fans"
+    return None
+
+
+def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_kind: str | None = None) -> dict:
     """Combine unit detection (OCR text) with the pixel-read Spectrum peak
     (read_spectrum_peak) into one supporting priority signal.
 
     Needs the chart IMAGE now, not just its OCR text - unlike the old Fund
     Amp version, the peak reading is pixel analysis, not a text field.
+
+    equipment_kind (see classify_equipment_kind) picks which threshold
+    set reads the amplitude - "pumps" uses the pump-specific functions
+    above, anything else (None included) uses the original fan-fitted
+    ones via _UNIT_HINT_FNS, unchanged from before this parameter
+    existed. Every existing caller that doesn't pass this gets exactly
+    the same behavior as before.
     """
     unit = detect_spectrum_unit(ocr_text)
     peak = read_spectrum_peak(chart_image)
     amp = peak["peak_amplitude"]
-    hint_fn = _UNIT_HINT_FNS.get(unit)
-    priority_hint = hint_fn(amp) if (hint_fn is not None and amp is not None) else None
+    if amp is None:
+        priority_hint = None
+    elif equipment_kind == "pumps":
+        if unit == "in/s":
+            priority_hint = pump_velocity_priority_hint(amp)
+        elif unit == "gE":
+            location = _gE_location(detect_measurement_point(ocr_text))
+            priority_hint = pump_acceleration_enveloping_priority_hint(amp, location)
+        elif unit == "g":
+            priority_hint = acceleration_priority_hint(amp)  # unchanged for both kinds
+        else:
+            priority_hint = None
+    else:
+        hint_fn = _UNIT_HINT_FNS.get(unit)
+        priority_hint = hint_fn(amp) if hint_fn is not None else None
     return {
         "spectrum_unit": unit,
         "spectrum_peak_amplitude": amp,
