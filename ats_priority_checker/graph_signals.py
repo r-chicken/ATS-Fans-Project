@@ -986,63 +986,21 @@ def pump_velocity_priority_hint(amp: float) -> int:
     return 4
 
 
-def _gE_location(measurement_point: str | None) -> str | None:
-    """Classify a measurement_point label (see detect_measurement_point)
-    as "Mtr" or "Pump" for pump_acceleration_enveloping_priority_hint's
-    location split - or None if it's neither (missing, or a location word
-    not seen on a gE reading). Ported from ATS-Pumps-Project."""
-    if not measurement_point:
-        return None
-    if measurement_point.startswith("Mtr"):
-        return "Mtr"
-    if measurement_point.startswith("Pump"):
-        return "Pump"
-    return None
+def pump_acceleration_enveloping_priority_hint(amp: float) -> int:
+    """Acceleration enveloping (gE) peak amplitude -> priority, PUMP
+    EQUIPMENT ONLY. >1.28 -> 1, 0.179-1.28 -> 2, 0.048-0.179 -> 3,
+    <0.048 -> 4.
 
-
-def _pump_acceleration_enveloping_priority_hint_motor(amp: float) -> int:
-    """Mtr-location half of pump_acceleration_enveloping_priority_hint's
-    gE split. >1.28 -> 1, 0.254-1.28 -> 2, 0.15-0.254 -> 3, <0.15 -> 4."""
+    Given directly by the project owner, superseding an earlier port
+    from ATS-Pumps-Project that split this by Mtr vs. Pump measurement
+    location with different numbers - that split isn't used here."""
     if amp > 1.28:
         return 1
-    if amp >= 0.254:
+    if amp >= 0.179:
         return 2
-    if amp >= 0.15:
+    if amp >= 0.048:
         return 3
     return 4
-
-
-def _pump_acceleration_enveloping_priority_hint_pump(amp: float) -> int:
-    """Pump-location half of pump_acceleration_enveloping_priority_hint's
-    gE split. >0.9 -> 1, 0.183-0.9 -> 2, 0.02-0.183 -> 3, <0.02 -> 4. Per
-    ATS-Pumps-Project: the 0.9 P2/P1 boundary is extrapolated, not fitted
-    (zero eyeballed Pump-location Priority-1 gE reports existed there at
-    fit time) - trust it less than the other boundaries here."""
-    if amp > 0.9:
-        return 1
-    if amp >= 0.183:
-        return 2
-    if amp >= 0.02:
-        return 3
-    return 4
-
-
-def pump_acceleration_enveloping_priority_hint(amp: float, location: str | None) -> int | None:
-    """Acceleration enveloping (gE) peak amplitude -> priority, PUMP
-    EQUIPMENT ONLY - split by measurement location (Mtr vs. Pump - see
-    _gE_location), not one shared threshold. Returns None for an
-    unrecognized location rather than guessing: per ATS-Pumps-Project,
-    Motor-location gE reads 2-5x higher than Pump-location gE at the same
-    stated priority, so running a Pump reading through Mtr thresholds (or
-    vice versa) reads as far less severe than it actually is - worse than
-    admitting the location isn't known. See ATS-Pumps-Project's
-    graph_signals.py, acceleration_enveloping_priority_hint, for the full
-    derivation."""
-    if location == "Mtr":
-        return _pump_acceleration_enveloping_priority_hint_motor(amp)
-    if location == "Pump":
-        return _pump_acceleration_enveloping_priority_hint_pump(amp)
-    return None
 
 
 def classify_equipment_kind(equipment_id: str | None) -> str | None:
@@ -1086,8 +1044,7 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
         if unit == "in/s":
             priority_hint = pump_velocity_priority_hint(amp)
         elif unit == "gE":
-            location = _gE_location(detect_measurement_point(ocr_text))
-            priority_hint = pump_acceleration_enveloping_priority_hint(amp, location)
+            priority_hint = pump_acceleration_enveloping_priority_hint(amp)
         elif unit == "g":
             priority_hint = acceleration_priority_hint(amp)  # unchanged for both kinds
         else:
