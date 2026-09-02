@@ -49,9 +49,11 @@ st.markdown(
 
 
 @st.cache_resource(show_spinner="Loading model (first run only)...")
-def _load_state() -> dict:
-    """Loaded once per running process (st.cache_resource, not
-    cache_data - this holds live model objects, not serializable data).
+def _load_model_state(secrets_key: str) -> dict:
+    """Loaded once per running process per secrets_key (st.cache_resource
+    caches per distinct argument, so "model_fans" and "model_pumps" each
+    get their own cached model - this holds live model objects, not
+    serializable data, hence cache_resource rather than cache_data).
 
     The trained model still never goes into git (same reasoning as
     webapp/.gitignore) - here it comes from this app's Secrets instead
@@ -63,12 +65,13 @@ def _load_state() -> dict:
     from sentence_transformers import SentenceTransformer
 
     try:
-        model_b64 = st.secrets["model"]["joblib_b64"]
-        meta_json = st.secrets["model"]["meta_json"]
+        section = st.secrets[secrets_key]
+        model_b64 = section["joblib_b64"]
+        meta_json = section["meta_json"]
     except (KeyError, FileNotFoundError) as exc:
         raise RuntimeError(
-            "No trained model found in this app's Secrets. Add a [model] section "
-            "with joblib_b64 and meta_json - see streamlit_app/README.md."
+            f"No trained model found in this app's Secrets under [{secrets_key}]. "
+            f"Add joblib_b64 and meta_json there - see streamlit_app/README.md."
         ) from exc
 
     clf = joblib.load(io.BytesIO(base64.b64decode(model_b64)))
@@ -77,13 +80,13 @@ def _load_state() -> dict:
     return {"clf": clf, "embedder": embedder}
 
 
-def _score_pdfs(paths: list[Path]) -> pd.DataFrame:
+def _score_pdfs(paths: list[Path], state: dict) -> pd.DataFrame:
     """Same per-report extraction path as process_pdf, for every page of
-    every uploaded PDF, scored against the loaded model - no batch
-    dataset, no escalation history, just this report's own text and its
-    own Spectrum chart against its own stated priority (see
-    model.priority_recommendation_table)."""
-    state = _load_state()
+    every uploaded PDF, scored against the given model state (see
+    _load_model_state - which model this is, fans vs. pumps, is the
+    caller's choice) - no batch dataset, no escalation history, just
+    this report's own text and its own Spectrum chart against its own
+    stated priority (see model.priority_recommendation_table)."""
     rows = []
     for path in paths:
         try:
@@ -223,16 +226,20 @@ def _render_report_card(row: pd.Series) -> None:
             st.caption(f"Spectrum not read: {row['parse_notes']}")
 
 
-st.title("ATS Vibration Priority Checker")
-st.caption(
-    "Upload a report PDF to see whether the text and the Spectrum chart "
-    "agree with the priority the report states."
-)
+def _render_scoring_section(label: str, secrets_key: str, key_prefix: str) -> None:
+    """One independent "upload -> Analyze -> results" section, backed by
+    its own model (own Secrets key, own cache_resource entry). Widget
+    keys are prefixed so the Fans and Pumps sections don't collide with
+    each other - Streamlit requires unique keys per widget on a page."""
+    st.header(label)
+    uploaded = st.file_uploader(
+        "Report PDF(s)", type=["pdf"], accept_multiple_files=True, key=f"{key_prefix}_upload"
+    )
+    go = st.button("Analyze", type="primary", disabled=not uploaded, key=f"{key_prefix}_analyze")
 
-uploaded = st.file_uploader("Report PDF(s)", type=["pdf"], accept_multiple_files=True)
-go = st.button("Analyze", type="primary", disabled=not uploaded)
+    if not go:
+        return
 
-if go:
     with st.spinner("Reading and scoring report(s)..."):
         with tempfile.TemporaryDirectory() as tmp_dir:
             paths = []
@@ -242,26 +249,40 @@ if go:
                 paths.append(path)
             table = None
             try:
-                table = _score_pdfs(paths)
+                state = _load_model_state(secrets_key)
+                table = _score_pdfs(paths, state)
             except RuntimeError as exc:
                 st.error(str(exc))
 
-    if table is not None:
-        if table.empty:
-            st.warning("No readable report pages found in the uploaded PDF(s).")
-        else:
-            flagged = table["any_disagreement"].eq(True).fillna(False) if "any_disagreement" in table.columns else pd.Series(False, index=table.index)
+    if table is None:
+        return
 
-            st.caption(
-                f"{len(table)} report(s) analyzed - {int(flagged.sum())} flagged for review."
-                if flagged.any()
-                else f"{len(table)} report(s) analyzed - text and spectrum agree with the stated priority on all of them."
-            )
-            for _, row in table.iterrows():
-                _render_report_card(row)
+    if table.empty:
+        st.warning("No readable report pages found in the uploaded PDF(s).")
+        return
 
-            with st.expander("Show full data table"):
-                st.dataframe(_format_table_for_display(table), use_container_width=True)
+    flagged = table["any_disagreement"].eq(True).fillna(False) if "any_disagreement" in table.columns else pd.Series(False, index=table.index)
+    st.caption(
+        f"{len(table)} report(s) analyzed - {int(flagged.sum())} flagged for review."
+        if flagged.any()
+        else f"{len(table)} report(s) analyzed - text and spectrum agree with the stated priority on all of them."
+    )
+    for _, row in table.iterrows():
+        _render_report_card(row)
+
+    with st.expander("Show full data table"):
+        st.dataframe(_format_table_for_display(table), use_container_width=True)
+
+
+st.title("ATS Vibration Priority Checker")
+st.caption(
+    "Upload a report PDF to see whether the text and the Spectrum chart "
+    "agree with the priority the report states."
+)
+
+_render_scoring_section("Score Fans", "model_fans", "fans")
+st.divider()
+_render_scoring_section("Score Pumps", "model_pumps", "pumps")
 
 st.divider()
 st.markdown(
