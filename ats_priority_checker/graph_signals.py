@@ -1004,18 +1004,21 @@ def pump_acceleration_enveloping_priority_hint(amp: float) -> int:
 
 
 def classify_equipment_kind(equipment_id: str | None) -> str | None:
-    """Fan vs. pump, straight off the equipment description text
-    extract.py parses out of the report (e.g. 'EF-3521 Exhaust Fan',
-    'Fryer Hot Oil Pump') - both words are spelled out in that string on
-    every report seen so far, so a plain keyword check is simpler and
-    more transparent than a learned classifier for this one decision.
-    Returns None when neither word appears, so the caller can flag it
-    rather than guess which threshold set applies."""
+    """Fan vs. pump vs. blower, straight off the equipment description
+    text extract.py parses out of the report (e.g. 'EF-3521 Exhaust
+    Fan', 'Fryer Hot Oil Pump', 'Transfer Belt Blower') - the word is
+    spelled out in that string on every report seen so far, so a plain
+    keyword check is simpler and more transparent than a learned
+    classifier for this one decision. Returns None when none of the
+    three appear, so the caller can flag it rather than guess which
+    threshold set applies."""
     if not equipment_id:
         return None
     text = equipment_id.lower()
     if "pump" in text:
         return "pumps"
+    if "blower" in text:
+        return "blowers"
     if "fan" in text:
         return "fans"
     return None

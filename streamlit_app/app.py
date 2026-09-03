@@ -249,7 +249,7 @@ def _disagrees(value) -> bool:
     return pd.notna(value) and not bool(value)
 
 
-_KIND_LABELS = {"fans": "Fan model", "pumps": "Pump model"}
+_KIND_LABELS = {"fans": "Fan model", "pumps": "Pump model", "blowers": "Blower model"}
 
 
 def _render_report_card(row: pd.Series) -> None:
@@ -359,6 +359,7 @@ if go:
             model_states = {
                 "fans": _try_load_model_state("model_fans"),
                 "pumps": _try_load_model_state("model_pumps"),
+                "blowers": _try_load_model_state("model_blowers"),
             }
             table = _score_pdfs(paths, model_states, pdf_bytes_by_stem)
 
@@ -373,7 +374,7 @@ if go:
         )
 
         has_kind_column = "equipment_kind" in table.columns
-        for kind, heading in (("fans", "Fans"), ("pumps", "Pumps")):
+        for kind, heading in (("fans", "Fans"), ("pumps", "Pumps"), ("blowers", "Blowers")):
             subset = table[table["equipment_kind"] == kind] if has_kind_column else pd.DataFrame()
             if subset.empty:
                 continue

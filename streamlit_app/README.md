@@ -35,10 +35,11 @@ PATH" again, check that `packages.txt` is still at the root first.
 ## 2. Add your trained models as Secrets
 
 There's a single upload box - each uploaded report is automatically
-sorted into a Fans or Pumps group (from the equipment description text
-already parsed out of the report, e.g. "...Exhaust Fan" vs. "...Hot Oil
-Pump") and scored against that group's own trained model. That means
-there are two model bundles to add, under two different Secrets keys.
+sorted into a Fans, Pumps, or Blowers group (from the equipment
+description text already parsed out of the report, e.g. "...Exhaust
+Fan" vs. "...Hot Oil Pump" vs. "...Belt Blower") and scored against
+that group's own trained model. That means there are up to three model
+bundles to add, under three different Secrets keys.
 
 Streamlit Community Cloud's Secrets are a plain-text box (TOML format),
 so the model files go in there instead of git - same reasoning as
@@ -46,8 +47,9 @@ so the model files go in there instead of git - same reasoning as
 history, and you'll replace it every time you retrain).
 
 On the app's page: **Settings (⋮ menu, or the gear icon) -> Secrets**,
-and paste in this template, filling in all four placeholders (fans'
-files under `[model_fans]`, pumps' under `[model_pumps]`):
+and paste in this template, filling in the placeholders (fans' files
+under `[model_fans]`, pumps' under `[model_pumps]`, blowers' under
+`[model_blowers]`):
 
 ```toml
 [model_fans]
@@ -61,9 +63,15 @@ joblib_b64 = "PASTE_BASE64_TEXT_HERE"
 meta_json = """
 PASTE_RAW_CONTENTS_OF_priority_classifier.meta.json_HERE
 """
+
+[model_blowers]
+joblib_b64 = "PASTE_BASE64_TEXT_HERE"
+meta_json = """
+PASTE_RAW_CONTENTS_OF_priority_classifier.meta.json_HERE
+"""
 ```
 
-For each of the two sections:
+For each section:
 
 - **`meta_json`**: open that model's `priority_classifier.meta.json`
   (from its own Colab run's Drive output) in any text editor, copy
@@ -83,11 +91,11 @@ For each of the two sections:
   of `PASTE_BASE64_TEXT_HERE` (keep the surrounding quotes already in
   the template).
 
-Click **Save** - the app restarts automatically and picks up all four
-values. If you only have one model ready right now, it's fine to fill
-in just that section and add the other later - reports of that kind
-just come back with a note explaining there's no model configured for
-them yet, while the kind that IS configured still scores normally.
+Click **Save** - the app restarts automatically and picks up whichever
+sections you filled in. You don't need all three ready at once - fill
+in whichever models you have and add the rest later; reports of a kind
+with no model configured yet just come back with a note saying so,
+while the kinds that ARE configured keep scoring normally.
 
 ## 3. Open it
 
@@ -97,8 +105,8 @@ Back on the app's page, click **App URL** (something like
 ## Updating later
 
 - **New model after retraining**: repeat step 2 with the fresh files,
-  for whichever of `[model_fans]` / `[model_pumps]` changed - Settings
-  -> Secrets -> replace that section's two values -> Save. No rebuild
-  command to run yourself.
+  for whichever of `[model_fans]` / `[model_pumps]` / `[model_blowers]`
+  changed - Settings -> Secrets -> replace that section's two values
+  -> Save. No rebuild command to run yourself.
 - **Code changes**: a normal `git push` to the branch this app is
   watching - it redeploys automatically.
