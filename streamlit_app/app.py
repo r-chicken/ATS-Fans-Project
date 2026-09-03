@@ -148,7 +148,7 @@ def _score_pdfs(
     # spectrum_priority_hint. Text still scores normally via that kind's
     # own model below; this just explains why Spectrum Recommends is
     # blank instead of leaving it unexplained.
-    no_spectrum_support = ~unclassified & ~usable["equipment_kind"].isin(["fans", "pumps"])
+    no_spectrum_support = ~unclassified & ~usable["equipment_kind"].isin(["fans", "pumps", "blowers"])
     usable.loc[no_spectrum_support, "parse_notes"] = (
         usable.loc[no_spectrum_support, "parse_notes"]
         + "; no spectrum amplitude thresholds fitted for this equipment type yet"

@@ -1078,6 +1078,44 @@ def pump_acceleration_enveloping_priority_hint(amp: float) -> int:
     return 4
 
 
+def blower_velocity_priority_hint(amp: float) -> int:
+    """Velocity (in/s) peak amplitude -> priority, BLOWER EQUIPMENT ONLY.
+    >1.25 -> 1, 0.525-1.25 -> 2, 0.2875-0.525 -> 3, <0.2875 -> 4. Ported
+    from ATS-Blower-Project - fit against 338 of that project's own
+    blower reports (weighted-F1 grid search, same method as the pump/fan
+    fits elsewhere in this file); accuracy 72.5% vs. a 60.4% "always
+    guess Priority 4" baseline there. See ATS-Blower-Project's
+    graph_signals.py, velocity_priority_hint, for the full derivation -
+    including why blower thresholds are their own fit rather than reused
+    pump numbers."""
+    if amp > 1.25:
+        return 1
+    if amp >= 0.525:
+        return 2
+    if amp >= 0.2875:
+        return 3
+    return 4
+
+
+def blower_acceleration_enveloping_priority_hint(amp: float) -> int:
+    """Acceleration enveloping (gE) peak amplitude -> priority, BLOWER
+    EQUIPMENT ONLY. >0.925 -> 1, 0.275-0.925 -> 2, 0.17-0.275 -> 3,
+    <0.17 -> 4. Ported from ATS-Blower-Project - fit against 122 of that
+    project's own blower reports; accuracy 54.9% vs. a 49.2% baseline
+    there - a much weaker fit than velocity's (same conclusion the
+    pump/fan gE fits reached: severe real overlap between priorities at
+    the same gE amplitude, not a threshold-tuning problem). See
+    ATS-Blower-Project's graph_signals.py, acceleration_enveloping_
+    priority_hint, for the full derivation."""
+    if amp > 0.925:
+        return 1
+    if amp >= 0.275:
+        return 2
+    if amp >= 0.17:
+        return 3
+    return 4
+
+
 def classify_equipment_kind(equipment_id: str | None) -> str | None:
     """Fan vs. pump vs. blower, straight off the equipment description
     text extract.py parses out of the report (e.g. 'EF-3521 Exhaust
@@ -1107,18 +1145,17 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
     Amp version, the peak reading is pixel analysis, not a text field.
 
     equipment_kind (see classify_equipment_kind) picks which threshold
-    set reads the amplitude - "pumps" uses the pump-specific functions
-    above, "fans" uses the original fan-fitted ones via _UNIT_HINT_FNS.
-    Anything else (None included - couldn't tell fan from pump, or a
-    different machine type like a blower entirely) gets no priority
-    hint at all: neither threshold set was fitted for it, and a wrong
-    guess reads as a real answer with nothing marking it as such - see
-    process_pdf, which still returns a spectrum reading either way
-    (unit/amplitude), just no priority_hint from it. Text-based scoring
-    is a separate decision the caller makes on its own (see
-    streamlit_app/app.py) - unlike these amplitude thresholds, the text
-    classifier isn't equipment-specific in the same way, so it isn't
-    gated here.
+    set reads the amplitude - "pumps" and "blowers" each use their own
+    equipment-specific functions above, "fans" uses the original
+    fan-fitted ones via _UNIT_HINT_FNS. Anything else (None included -
+    couldn't tell which of the three it is) gets no priority hint at
+    all: no threshold set was fitted for it, and a wrong guess reads as
+    a real answer with nothing marking it as such - see process_pdf,
+    which still returns a spectrum reading either way (unit/amplitude),
+    just no priority_hint from it. Text-based scoring is a separate
+    decision the caller makes on its own (see streamlit_app/app.py) -
+    unlike these amplitude thresholds, the text classifier isn't
+    equipment-specific in the same way, so it isn't gated here.
     """
     unit = detect_spectrum_unit(ocr_text)
     peak = read_spectrum_peak(chart_image)
@@ -1132,6 +1169,15 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
             priority_hint = pump_acceleration_enveloping_priority_hint(amp)
         elif unit == "g":
             priority_hint = acceleration_priority_hint(amp)  # unchanged for both kinds
+        else:
+            priority_hint = None
+    elif equipment_kind == "blowers":
+        if unit == "in/s":
+            priority_hint = blower_velocity_priority_hint(amp)
+        elif unit == "gE":
+            priority_hint = blower_acceleration_enveloping_priority_hint(amp)
+        elif unit == "g":
+            priority_hint = acceleration_priority_hint(amp)  # unchanged across all kinds
         else:
             priority_hint = None
     elif equipment_kind == "fans":
