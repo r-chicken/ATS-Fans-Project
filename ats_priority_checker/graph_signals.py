@@ -101,6 +101,29 @@ MIN_RUN_HEIGHT_PX = 2       # below this, treat it as compression/antialiasing n
 MAX_PEEL_PASSES = 6         # how many stacked marker layers a single column can have peeled off it
 FULL_HEIGHT_TOL_PX = 2      # how close to literally touching both frame edges still counts as "spans it"
 
+# How much a pixel's channels may spread apart (max - min of R/G/B) and
+# still count as "frame border ink" in _find_plot_frame's dark-column scan.
+# The border/gridlines are genuinely neutral (black/gray, e.g. (0,0,0));
+# real trace ink is not, even when it also happens to read as "dark" by a
+# plain per-channel < 140 test - navy (0,0,128) has every channel under
+# 140 but a channel spread of 128. Needed because a genuine peak sitting
+# at a very low frequency (i.e. right next to the y-axis) can run almost
+# the full plot height in its own column, same as the border itself does -
+# without also requiring near-neutral color, that column's "dark fraction"
+# can outscore the border's actual 1px-wide black line and get PICKED as
+# the frame's left edge instead of it (confirmed on a real report: a
+# fund-amp peak at ~0.87 sitting one column right of the true border - the
+# border scored 0.575, the peak's own navy column scored 0.589 and won).
+# Once that happens, the left+2 margin meant to step past the border
+# instead steps past the peak itself, erasing it from the region before
+# ink-detection ever runs - the search then falls back to the tallest
+# peak that's left, which can be a much shorter one much further right.
+# This is very likely the mechanism behind "a thin peak reads as whatever
+# shorter/thicker peak is next in line" bug reports generally, not just
+# this one report - any genuine peak close enough to the axis to abut the
+# border column is equally at risk, regardless of how tall it is.
+FRAME_BORDER_MAX_CHANNEL_SPREAD = 40
+
 
 def detect_spectrum_unit(ocr_text: str) -> str:
     """Best-effort unit detection for the Spectrum plot, read from the
@@ -400,13 +423,41 @@ def _find_plot_frame(arr: np.ndarray, label_right_edge: float, a: float, b: floa
     small triangle max-value marker, which tesseract failed to read even
     after upscaling) - the frame border pixel search recovers the exact
     row anyway.
+
+    Two different "dark" tests are used here, deliberately not the same
+    one, for the two different things being searched for:
+
+    - Finding the left/right border COLUMNS requires near-neutral color
+      (small max-min channel spread), not just each channel under 140 -
+      see FRAME_BORDER_MAX_CHANNEL_SPREAD for why a plain per-channel test
+      lets a genuine colored peak's own trace column outscore the border's
+      real (black) column and get picked as the left edge instead of it,
+      when that peak sits at a low enough frequency to run almost the
+      full plot height right next to the y-axis (confirmed on a real
+      report). Column detection needs this tightening because nothing
+      else dilutes a single peak's own column - it's either clearly the
+      border or clearly a peak.
+    - Finding the top/bottom border ROWS deliberately keeps the original
+      looser test (any channel-under-140 pixel, colored or not). The
+      bottom border row in particular is a case where TIGHTENING backfires:
+      confirmed on the same real report, that row is a horizontal line
+      that nearly every near-zero-amplitude frequency bin's own vertical
+      trace also touches (their baseline sits right on it), so requiring
+      neutral color there throws out most of the row's own dark pixels as
+      "trace-colored" and can make a same-colored coincidence elsewhere
+      look stronger than the real border - the loose test correctly
+      treats "was dark for some reason" as enough evidence for a
+      full-width horizontal line, where the column search cannot afford
+      to.
     """
     H, W = arr.shape[0], arr.shape[1]
     r, g, bch = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
     dark = (r < 140) & (g < 140) & (bch < 140)
+    channel_spread = np.maximum(np.maximum(r, g), bch) - np.minimum(np.minimum(r, g), bch)
+    dark_neutral = dark & (channel_spread < FRAME_BORDER_MAX_CHANNEL_SPREAD)
 
     lo, hi = int(label_right_edge), int(label_right_edge) + 40
-    col_frac = dark.mean(axis=0)
+    col_frac = dark_neutral.mean(axis=0)
     left = lo + int(np.argmax(col_frac[lo:hi]))
 
     lo2, hi2 = int(W * 0.85), int(W * 0.995)
@@ -828,20 +879,44 @@ def read_spectrum_peak(chart_image: Image.Image) -> dict:
     """Read the Spectrum plot's tallest genuine peak off its own y-axis.
 
     Returns a dict with:
-      peak_amplitude       the peak, floored to the nearest y-axis label
-                            at or below it (float), or None if calibration
-                            or peak-finding failed
-      peak_amplitude_raw   the same reading before flooring (float or None) -
-                            kept for debugging/inspection, not used for
-                            priority thresholds
-      y_axis_ticks         the (value) labels used for calibration, for
-                            sanity-checking against the actual chart - can
-                            include a value strictly between two OCR'd
-                            labels that Tesseract itself never read (see
-                            _infer_grid_ticks), not only literal OCR output
-      error                None on success, else a short string saying
-                            what failed (e.g. "could not OCR enough y-axis
-                            tick labels to calibrate")
+      peak_amplitude         the peak's value (float, or None if
+                              calibration or peak-finding failed) - a
+                              continuous estimate from linearly
+                              interpolating the peak's pixel row against
+                              the calibrated y-axis (see below), NOT
+                              snapped to the nearest printed gridline
+      peak_amplitude_floored the same reading snapped down to the nearest
+                              y-axis label at or below it (float or None) -
+                              kept for cross-checking against a printed
+                              number on the chart by eye; not used for
+                              priority thresholds
+      y_axis_ticks            the (value) labels used for calibration, for
+                              sanity-checking against the actual chart - can
+                              include a value strictly between two OCR'd
+                              labels that Tesseract itself never read (see
+                              _infer_grid_ticks), not only literal OCR output
+      error                 None on success, else a short string saying
+                             what failed (e.g. "could not OCR enough y-axis
+                             tick labels to calibrate")
+
+    peak_amplitude used to be the floored reading, on the reasoning that
+    trading precision for staying anchored to a number actually printed on
+    the chart was worth it. Changed after a direct real-report comparison
+    (report_153: floored to 1.0, interpolated to 1.21, a person reading
+    the same chart by eye also independently said "about 1.2") - flooring
+    can only ever revise a reading DOWN, never up, so across many reports
+    it's a systematic downward bias on severity, not neutral rounding.
+    It also turned out to be quietly inconsistent with how this project's
+    own priority thresholds are fit: velocity_priority_hint and
+    acceleration_enveloping_priority_hint are refit against hand-eyeballed
+    chart readings (see their docstrings) - a person reading "about 1.2"
+    off a chart was never flooring to the nearest printed gridline either,
+    so scoring the automated reading against thresholds fit to that kind
+    of number, while itself floored, was comparing two different things.
+    _floor_to_axis_label / peak_amplitude_floored are kept, not deleted -
+    still useful for manually cross-checking a specific reading against
+    the chart's own printed numbers - just no longer what feeds
+    spectrum_priority_hint or gets used as priority thresholds are fit.
 
     Never raises - any failure (OCR found <2 usable tick labels, frame
     border not found, empty plot area, ...) comes back as
@@ -854,33 +929,33 @@ def read_spectrum_peak(chart_image: Image.Image) -> dict:
         panel = _crop_spectrum_panel(chart_image)
         points, label_right_edge = _read_y_axis_ticks(panel)
         if label_right_edge is None:
-            return {"peak_amplitude": None, "peak_amplitude_raw": None, "y_axis_ticks": [], "error": "no y-axis tick labels OCR'd"}
+            return {"peak_amplitude": None, "peak_amplitude_floored": None, "y_axis_ticks": [], "error": "no y-axis tick labels OCR'd"}
 
         calibration = _ransac_calibration(points)
         if calibration is None:
-            return {"peak_amplitude": None, "peak_amplitude_raw": None, "y_axis_ticks": [], "error": "could not calibrate y-axis (fewer than 2 consistent tick labels)"}
+            return {"peak_amplitude": None, "peak_amplitude_floored": None, "y_axis_ticks": [], "error": "could not calibrate y-axis (fewer than 2 consistent tick labels)"}
         a, b, kept = calibration
 
         arr = np.asarray(panel.convert("RGB")).astype(int)
         max_tick_val = max(v for _, v in kept)
         left, right, top, bottom = _find_plot_frame(arr, label_right_edge, a, b, max_tick_val)
         if right <= left + 4 or bottom <= top + 4:
-            return {"peak_amplitude": None, "peak_amplitude_raw": None, "y_axis_ticks": sorted(_infer_grid_ticks({v for _, v in kept})), "error": "plot frame border not found"}
+            return {"peak_amplitude": None, "peak_amplitude_floored": None, "y_axis_ticks": sorted(_infer_grid_ticks({v for _, v in kept})), "error": "plot frame border not found"}
 
         peak_row, _peak_col = _find_peak_pixel(arr, left, right, top, bottom)
         if peak_row is None:
-            return {"peak_amplitude": None, "peak_amplitude_raw": None, "y_axis_ticks": sorted(_infer_grid_ticks({v for _, v in kept})), "error": "no data ink found in plot area"}
+            return {"peak_amplitude": None, "peak_amplitude_floored": None, "y_axis_ticks": sorted(_infer_grid_ticks({v for _, v in kept})), "error": "no data ink found in plot area"}
 
         raw_value = (peak_row - b) / a
         floored = _floor_to_axis_label(raw_value, kept)
         return {
-            "peak_amplitude": floored,
-            "peak_amplitude_raw": raw_value,
+            "peak_amplitude": round(raw_value, 4),
+            "peak_amplitude_floored": floored,
             "y_axis_ticks": sorted(_infer_grid_ticks({v for _, v in kept})),
             "error": None,
         }
     except Exception as exc:  # noqa: BLE001 - one bad image shouldn't kill a batch run
-        return {"peak_amplitude": None, "peak_amplitude_raw": None, "y_axis_ticks": [], "error": f"unexpected error: {exc}"}
+        return {"peak_amplitude": None, "peak_amplitude_floored": None, "y_axis_ticks": [], "error": f"unexpected error: {exc}"}
 
 
 # --- Priority thresholds per unit ---------------------------------------
@@ -1064,7 +1139,7 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
     return {
         "spectrum_unit": unit,
         "spectrum_peak_amplitude": amp,
-        "spectrum_peak_amplitude_raw": peak["peak_amplitude_raw"],
+        "spectrum_peak_amplitude_floored": peak["peak_amplitude_floored"],
         "spectrum_priority_hint": priority_hint,
         "spectrum_peak_error": peak["error"],
     }
