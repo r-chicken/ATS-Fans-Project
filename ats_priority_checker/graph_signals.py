@@ -1030,10 +1030,17 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
 
     equipment_kind (see classify_equipment_kind) picks which threshold
     set reads the amplitude - "pumps" uses the pump-specific functions
-    above, anything else (None included) uses the original fan-fitted
-    ones via _UNIT_HINT_FNS, unchanged from before this parameter
-    existed. Every existing caller that doesn't pass this gets exactly
-    the same behavior as before.
+    above, "fans" uses the original fan-fitted ones via _UNIT_HINT_FNS.
+    Anything else (None included - couldn't tell fan from pump, or a
+    different machine type like a blower entirely) gets no priority
+    hint at all: neither threshold set was fitted for it, and a wrong
+    guess reads as a real answer with nothing marking it as such - see
+    process_pdf, which still returns a spectrum reading either way
+    (unit/amplitude), just no priority_hint from it. Text-based scoring
+    is a separate decision the caller makes on its own (see
+    streamlit_app/app.py) - unlike these amplitude thresholds, the text
+    classifier isn't equipment-specific in the same way, so it isn't
+    gated here.
     """
     unit = detect_spectrum_unit(ocr_text)
     peak = read_spectrum_peak(chart_image)
@@ -1049,9 +1056,11 @@ def spectrum_priority_hint(chart_image: Image.Image, ocr_text: str, equipment_ki
             priority_hint = acceleration_priority_hint(amp)  # unchanged for both kinds
         else:
             priority_hint = None
-    else:
+    elif equipment_kind == "fans":
         hint_fn = _UNIT_HINT_FNS.get(unit)
         priority_hint = hint_fn(amp) if hint_fn is not None else None
+    else:
+        priority_hint = None
     return {
         "spectrum_unit": unit,
         "spectrum_peak_amplitude": amp,

@@ -137,7 +137,10 @@ def _score_pdfs(
 
     unclassified = usable["equipment_kind"].isna()
     usable.loc[unclassified, "parse_notes"] = (
-        usable.loc[unclassified, "parse_notes"] + "; couldn't tell fan vs. pump from the equipment description - not text-scored"
+        usable.loc[unclassified, "parse_notes"]
+        + "; couldn't tell fan vs. pump from the equipment description - text still scored with the "
+        "fan model as a general default, but no spectrum priority (neither threshold set is fitted "
+        "for this equipment type)"
     ).str.strip("; ")
 
     for kind, state in model_states.items():
@@ -152,6 +155,24 @@ def _score_pdfs(
         texts = subset.apply(report_text, axis=1).tolist()
         embeddings = state["embedder"].encode(texts, normalize_embeddings=True)
         usable.loc[subset.index, "predicted_priority"] = state["clf"].predict(embeddings)
+
+    # Unclassified equipment (blowers, or anything else that isn't
+    # recognizably a fan or pump) still gets a text prediction, using
+    # the fans model as a general-purpose default - the text classifier
+    # reads language patterns in the Recommendations/Comments, not
+    # equipment-specific vibration thresholds, so there's no reason to
+    # withhold it just because the equipment type is unclear. The
+    # spectrum reading is intentionally left blank for these instead
+    # (see graph_signals.spectrum_priority_hint) - unlike text, the
+    # amplitude thresholds genuinely are equipment-specific, and
+    # neither fitted set applies to a machine type this app doesn't
+    # know about.
+    fans_state = model_states.get("fans")
+    unclassified_subset = usable[unclassified]
+    if fans_state is not None and not unclassified_subset.empty:
+        texts = unclassified_subset.apply(report_text, axis=1).tolist()
+        embeddings = fans_state["embedder"].encode(texts, normalize_embeddings=True)
+        usable.loc[unclassified_subset.index, "predicted_priority"] = fans_state["clf"].predict(embeddings)
 
     table = priority_recommendation_table(usable)
     table["equipment_kind"] = usable["equipment_kind"]
@@ -245,13 +266,17 @@ def _render_report_card(row: pd.Series) -> None:
             if pd.notna(site):
                 st.caption(str(site))
             st.markdown(f"**{header}**")
+            # Visible confirmation of which model actually scored this
+            # report's text - fans and pumps are routed to separate joblib
+            # bundles (see _score_pdfs), this is here so that's checkable
+            # at a glance instead of just trusted. Unclassified equipment
+            # (blowers, etc.) still gets a label - it was scored too, with
+            # the fan model as a default (see _score_pdfs), not skipped.
             kind = row.get("equipment_kind")
             if pd.notna(kind):
-                # Visible confirmation of which model actually scored this
-                # report - fans and pumps are routed to separate joblib
-                # bundles (see _score_pdfs), this is here so that's checkable
-                # at a glance instead of just trusted.
                 st.caption(f"Scored with: {_KIND_LABELS.get(kind, kind)}")
+            else:
+                st.caption("Scored with: Fan model (default - equipment type not recognized)")
         with link_col:
             pdf_bytes = row.get("pdf_bytes")
             if isinstance(pdf_bytes, (bytes, bytearray)):
